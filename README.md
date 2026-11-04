@@ -9,6 +9,8 @@ Built with PySide6 and yt-dlp, packaged as a portable folder — no installer, n
 
 **by ActeronDev**
 
+Licensed under the [MIT License](LICENSE).
+
 ![Nimbus Downloader](assets/screenshot.png)
 
 ## Features
