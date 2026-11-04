@@ -1,6 +1,6 @@
 # Nimbus Downloader
 
-A clean Windows desktop app for downloading YouTube video and audio at full quality.
+A clean Windows desktop app for downloading YouTube **and TikTok** video and audio at full quality.
 Built with PySide6 and yt-dlp, packaged as a portable folder — no installer, no Python needed.
 
 > **Downloading the app?** Use the [**latest release**](../../releases/latest) and grab
@@ -15,9 +15,11 @@ Licensed under the [MIT License](LICENSE).
 
 ## Features
 
-- **Video or audio** from a single link, with an in-app player that handles VP9 / AV1 / opus
+- **YouTube and TikTok** links, with an in-app player that handles VP9 / AV1 / H.265 / opus
+- **Video or audio** from a single link
 - **Full quality, always** — streams are copied, never re-encoded
-- **Visible quality chips**: Best Quality / 360p / 480p / 720p (HD) / 1080p (FHD) / 1440p (2K) / 2160p (4K)
+- **Visible quality chips** on YouTube: Best Quality / 360p / 480p / 720p (HD) / 1080p (FHD) / 1440p (2K) / 2160p (4K);
+  single-format sites like TikTok collapse to Best Quality
 - **Parallel downloads** with pause, resume and cancel
 - **Media library** with thumbnails, plus delete that removes the file from disk
 - **Link preview** — title, channel, duration and thumbnail before you download

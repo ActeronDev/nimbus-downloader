@@ -251,7 +251,7 @@ class HomePage(QWidget):
         self.fetcher.failed.connect(self._preview_failed)
 
         title = QLabel("Home"); title.setObjectName("pageTitle")
-        sub = QLabel("Paste a YouTube link, pick what you want, hit Download.")
+        sub = QLabel("Paste a YouTube or TikTok link, pick what you want, hit Download.")
         sub.setObjectName("muted")
 
         self.url = QLineEdit()
@@ -323,7 +323,19 @@ class HomePage(QWidget):
         self._timer = QTimer(self); self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._fetch_preview)
 
+    def _host(self) -> str:
+        from urllib.parse import urlparse
+        return (urlparse(self.url.text().strip()).netloc or "").lower()
+
+    def _is_youtube(self) -> bool:
+        h = self._host()
+        return not h or "youtube.com" in h or "youtu.be" in h
+
     def _queue_preview(self):
+        host = self._host()
+        if host != getattr(self, "_host_now", None):
+            self._host_now = host
+            self._fill_qualities()
         self._timer.start(700)
 
     def _fetch_preview(self):
@@ -361,7 +373,12 @@ class HomePage(QWidget):
             self._fetch_preview()
 
     def _fill_qualities(self):
-        self.quality.set_options(VIDEO_QUALITIES if self.b_video.isChecked() else AUDIO_QUALITIES)
+        if self.b_video.isChecked():
+            # TikTok and other single-format sites only offer one real choice
+            options = VIDEO_QUALITIES if self._is_youtube() else ["Best Quality"]
+        else:
+            options = AUDIO_QUALITIES
+        self.quality.set_options(options)
         if hasattr(self, "folder_lbl"):
             self._sync_folder()
 

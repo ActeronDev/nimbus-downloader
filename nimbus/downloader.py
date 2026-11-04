@@ -223,7 +223,7 @@ class Manager(QObject):
 
         # Quality tag in the name: 480p and 1080p of the same video must coexist,
         # otherwise yt-dlp sees the old file and reports "already downloaded".
-        name = ("%(title).150B [%(id)s][%(height)sp].%(ext)s" if job.kind == "video"
+        name = ("%(title).150B [%(id)s][%(width)sx%(height)s].%(ext)s" if job.kind == "video"
                 else "%(title).150B [%(id)s].%(ext)s")
         opts = {
             "outtmpl": str(Path(job.outdir) / name),

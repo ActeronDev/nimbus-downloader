@@ -9,7 +9,7 @@ from pathlib import Path
 APP_NAME = "Nimbus Downloader"
 SHORT_NAME = "Nimbus"
 AUTHOR = "ActeronDev"
-VERSION = "0.9.0"
+VERSION = "0.9.5"
 
 
 def app_dir() -> Path:
