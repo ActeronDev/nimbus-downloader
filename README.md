@@ -3,6 +3,10 @@
 A clean Windows desktop app for downloading YouTube video and audio at full quality.
 Built with PySide6 and yt-dlp, packaged as a portable folder — no installer, no Python needed.
 
+> **Downloading the app?** Use the [**latest release**](../../releases/latest) and grab
+> `Nimbus-<version>-win64.zip` (~108 MB). The green **Code → Download ZIP** button only
+> gives you the source (~320 KB) — it does not contain the app.
+
 **by ActeronDev**
 
 ![Nimbus Downloader](assets/screenshot.png)
