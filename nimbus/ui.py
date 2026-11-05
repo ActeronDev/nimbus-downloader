@@ -8,24 +8,25 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QObject
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, Qt, Signal, QObject
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                               QProgressBar, QPushButton, QScrollArea, QSlider,
-                               QStackedWidget, QStyle, QVBoxLayout, QWidget)
+                               QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QSlider, QStackedWidget,
+                               QVBoxLayout, QWidget)
 
 import yt_dlp
 
-from . import config, update
-from .icons import icon
+from . import config, theme, update
 from .downloader import (AUDIO_QUALITIES, CANCELED, DONE, ERROR, PAUSED,
-                         PENDING, RUNNING, VIDEO_QUALITIES, Manager,
+                         PENDING, PROCESSING, RUNNING, VIDEO_QUALITIES, Manager,
                          _js_runtimes)
+from .icons import icon
+from .widgets import (Badge, ElidedLabel, EmptyState, HoverIconButton, SlimScroll,
+                      SmoothBar, Toaster, fade_in)
 
-ACCENT = "#6b8afd"
 THUMBS = config.data_dir() / "thumbs"
 THUMBS.mkdir(parents=True, exist_ok=True)
 
@@ -41,54 +42,41 @@ QUALITY_LABELS = {
     "MP3 192": "MP3 192",
 }
 
-QSS = f"""
-* {{ font-family:'Segoe UI'; font-size:13px; color:#e7eaf0; }}
-QWidget#root, QWidget#content {{ background:#0a0c10; }}
-QWidget#sidebar {{ background:#0d1014; border-right:1px solid #171c24; }}
-QStackedWidget > QWidget {{ background:#0a0c10; }}
-QScrollArea, QScrollArea > QWidget > QWidget {{ background:transparent; border:none; }}
-QLabel {{ background:transparent; }}
-QLabel#brand {{ font-size:18px; font-weight:800; letter-spacing:0.4px; }}
-QLabel#muted {{ color:#8b93a1; }}
-QLabel#hint {{ color:#6f7787; font-size:12px; }}
-QLabel#pageTitle {{ font-size:22px; font-weight:700; }}
-QLabel#cardTitle {{ font-size:14px; font-weight:600; }}
-QLabel#emptyState {{ color:#5b6472; font-size:14px; }}
-QLineEdit {{ background:#14171d; border:1px solid #242a34; border-radius:10px; padding:12px 14px; font-size:14px; }}
-QLineEdit:focus {{ border-color:{ACCENT}; }}
-QPushButton {{ background:#171b22; border:1px solid #262c37; border-radius:10px; padding:10px 16px; }}
-QPushButton:hover {{ background:#1e232c; border-color:#323a47; }}
-QPushButton#primary {{ background:{ACCENT}; border:none; color:#0a1020; font-weight:700; padding:12px 26px; font-size:14px; }}
-QPushButton#primary:hover {{ background:#7f9aff; }}
-QPushButton#nav {{ background:transparent; border:none; border-radius:10px; padding:11px 14px; color:#98a0af; text-align:left; font-size:13.5px; }}
-QPushButton#nav:hover {{ background:#151a21; color:#e7eaf0; }}
-QPushButton#nav:checked {{ background:#1a2130; color:#ffffff; font-weight:600; }}
-QPushButton#seg {{ background:#14171d; border:1px solid #242a34; border-radius:10px; padding:10px 24px; color:#9aa3b2; }}
-QPushButton#seg:checked {{ background:#1d2635; border-color:{ACCENT}; color:#ffffff; font-weight:600; }}
-QPushButton#chip {{ background:#12151b; border:1px solid #232a34; border-radius:9px; padding:10px 14px; color:#9aa3b2; }}
-QPushButton#chip:hover {{ border-color:#39424f; color:#e7eaf0; }}
-QPushButton#chip:checked {{ background:#1b2740; border-color:{ACCENT}; color:#ffffff; font-weight:600; }}
-QPushButton#ghost {{ background:transparent; border:none; color:#8b93a1; padding:7px 11px; }}
-QPushButton#ghost:hover {{ color:#e7eaf0; background:#151a21; border-radius:8px; }}
-QPushButton#danger {{ background:transparent; border:none; color:#9b6b6b; padding:7px 11px; }}
-QPushButton#danger:hover {{ color:#ff8080; background:#241618; border-radius:8px; }}
-QFrame#card {{ background:#11141a; border:1px solid #1c222b; border-radius:14px; }}
-QFrame#card:hover {{ border-color:#2b3340; }}
-QFrame#panel {{ background:#0f1217; border:1px solid #1b212a; border-radius:16px; }}
-QFrame#thumb {{ background:#0b0e12; border:1px solid #1c222b; border-radius:10px; }}
-QProgressBar {{ background:#181d25; border:none; border-radius:5px; height:8px; }}
-QProgressBar::chunk {{ background:{ACCENT}; border-radius:5px; }}
-QScrollBar:vertical {{ background:transparent; width:10px; margin:2px; }}
-QScrollBar::handle:vertical {{ background:#262c37; border-radius:5px; min-height:30px; }}
-QScrollBar::handle:vertical:hover {{ background:#323a47; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height:0; }}
-QSlider::groove:horizontal {{ height:5px; background:#232a35; border-radius:2px; }}
-QSlider::sub-page:horizontal {{ background:{ACCENT}; border-radius:2px; }}
-QSlider::handle:horizontal {{ background:#e7eaf0; width:13px; margin:-4px 0; border-radius:6px; }}
-QMenu {{ background:#14171d; border:1px solid #242a34; padding:6px; }}
-QMenu::item {{ padding:7px 22px; border-radius:7px; }}
-QMenu::item:selected {{ background:#1d2635; }}
-"""
+STATUS_TEXT = {
+    PENDING: ("Queued", theme.WARNING),
+    RUNNING: ("Downloading", theme.ACCENT),
+    PROCESSING: ("Processing", theme.ACCENT),
+    PAUSED: ("Paused", theme.WARNING),
+    DONE: ("Completed", theme.SUCCESS),
+    ERROR: ("Failed", theme.ERROR),
+    CANCELED: ("Canceled", theme.DIM),
+}
+
+_ERROR_MAP = (
+    (("sign in", "login", "logged in", "authentication", "account"),
+     "This video requires you to be logged in."),
+    (("ssl", "unable to download webpage", "urlopen", "getaddrinfo", "failed to resolve",
+      "connection", "network"), "Could not reach the page. Check your connection and try again."),
+    (("private video", "video unavailable", "no longer available", "removed"),
+     "This video is unavailable or private."),
+    (("unsupported url",), "This link isn't supported."),
+    (("http error 403", "403 forbidden"), "The site refused the request. Try updating yt-dlp."),
+    (("http error 404",), "Not found — the link may be broken."),
+    (("no space",), "Not enough disk space."),
+    (("timed out", "timeout"), "The connection timed out."),
+    (("re-encode",), "Could not convert the file to H.264."),
+    (("ffmpeg",), "Media processing failed (ffmpeg)."),
+    (("cancelled", "canceled"), "Download canceled."),
+)
+
+
+def _friendly_error(raw: str) -> str:
+    low = (raw or "").lower()
+    for keys, msg in _ERROR_MAP:
+        if any(k in low for k in keys):
+            return msg
+    first = (raw or "").splitlines()[0] if raw else ""
+    return first.replace("ERROR: ", "").strip()[:120] or "Something went wrong."
 
 
 # ---------------------------------------------------------------- helpers
@@ -183,12 +171,11 @@ class SeekSlider(QSlider):
 
 
 class Thumb(QLabel):
-    def __init__(self, w=160, h=90):
+    def __init__(self, w=160, h=90, big: bool = False):
         super().__init__()
         self.setFixedSize(w, h)
-        self.setObjectName("thumb")
+        self.setObjectName("thumbBig" if big else "thumb")
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("background:#0b0e12;border:1px solid #1c222b;border-radius:10px;color:#4b5563;")
         self.setText("▶")
 
     def load(self, path: str):
@@ -199,6 +186,7 @@ class Thumb(QLabel):
             self.setText("")
 
 
+# ---------------------------------------------------------------- pickers
 class QualityPicker(QWidget):
     """Visible quality chips — no dropdown."""
 
@@ -208,8 +196,8 @@ class QualityPicker(QWidget):
         super().__init__()
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(8)
-        self.grid.setVerticalSpacing(8)
+        self.grid.setHorizontalSpacing(theme.SM)
+        self.grid.setVerticalSpacing(theme.SM)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.group.buttonClicked.connect(lambda b: self.changed.emit(b.property("value")))
@@ -246,7 +234,7 @@ class CodecPicker(QWidget):
         super().__init__()
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
+        row.setSpacing(theme.SM)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         for label, val in (("H.264 / AAC — editing compatible", "h264"),
@@ -267,6 +255,13 @@ class CodecPicker(QWidget):
         return b.property("value") if b else "h264"
 
 
+def _label(text: str, name: str = "") -> QLabel:
+    lbl = QLabel(text)
+    if name:
+        lbl.setObjectName(name)
+    return lbl
+
+
 # ---------------------------------------------------------------- home
 class HomePage(QWidget):
     def __init__(self, win: "MainWindow"):
@@ -274,87 +269,134 @@ class HomePage(QWidget):
         self.win = win
         self.settings = config.load_settings()
         self.meta: dict = {}
+        self._busy = False
         self.fetcher = PreviewFetcher(self)
         self.fetcher.done.connect(self._preview_ready)
         self.fetcher.failed.connect(self._preview_failed)
 
-        title = QLabel("Home"); title.setObjectName("pageTitle")
-        sub = QLabel("Paste a YouTube or TikTok link, pick what you want, hit Download.")
-        sub.setObjectName("muted")
+        title = _label("Home", "pageTitle")
+        sub = _label("Paste a YouTube or TikTok link, pick what you want, hit Download.", "muted")
 
         self.url = QLineEdit()
         self.url.setPlaceholderText("https://www.youtube.com/watch?v=…")
+        self.url.setMinimumHeight(52)
         self.url.returnPressed.connect(self.start)
         self.url.textChanged.connect(self._queue_preview)
+        self.url.textChanged.connect(self._sync_button)
         btn_paste = QPushButton()
-        btn_paste.setIcon(icon("paste"))
-        btn_paste.setFixedSize(46, 46)
+        btn_paste.setObjectName("ghost")
+        btn_paste.setIcon(icon("paste", theme.MUTED))
+        btn_paste.setFixedSize(52, 52)
         btn_paste.setToolTip("Paste link from clipboard")
         btn_paste.setCursor(Qt.PointingHandCursor)
         btn_paste.clicked.connect(self.paste)
-        row = QHBoxLayout(); row.setSpacing(8); row.addWidget(self.url, 1); row.addWidget(btn_paste)
+        row = QHBoxLayout()
+        row.setSpacing(theme.SM)
+        row.addWidget(self.url, 1)
+        row.addWidget(btn_paste)
 
-        self.preview = QFrame(); self.preview.setObjectName("card"); self.preview.setVisible(False)
-        self.p_thumb = Thumb(160, 90)
-        self.p_title = QLabel(); self.p_title.setObjectName("cardTitle"); self.p_title.setWordWrap(True)
-        self.p_meta = QLabel(); self.p_meta.setObjectName("hint")
-        pv = QHBoxLayout(self.preview); pv.setContentsMargins(12, 12, 14, 12); pv.setSpacing(14)
+        self.preview = QFrame()
+        self.preview.setObjectName("card")
+        self.preview.setVisible(False)
+        self.p_thumb = Thumb(176, 99)
+        self.p_title = ElidedLabel()
+        self.p_title.setObjectName("cardTitle")
+        self.p_meta = QLabel()
+        self.p_meta.setObjectName("hint")
+        pv = QHBoxLayout(self.preview)
+        pv.setContentsMargins(12, 12, 16, 12)
+        pv.setSpacing(14)
         pv.addWidget(self.p_thumb)
-        col = QVBoxLayout(); col.setSpacing(4); col.addStretch(1)
-        col.addWidget(self.p_title); col.addWidget(self.p_meta); col.addStretch(1)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        col.addStretch(1)
+        col.addWidget(self.p_title)
+        col.addWidget(self.p_meta)
+        col.addStretch(1)
         pv.addLayout(col, 1)
 
-        self.bg = QButtonGroup(self); self.bg.setExclusive(True)
-        self.b_video = QPushButton("Video"); self.b_video.setCheckable(True); self.b_video.setObjectName("seg")
-        self.b_audio = QPushButton("Audio"); self.b_audio.setCheckable(True); self.b_audio.setObjectName("seg")
+        seg_box = QFrame()
+        seg_box.setObjectName("panel")
+        self.bg = QButtonGroup(self)
+        self.bg.setExclusive(True)
+        self.b_video = QPushButton("Video")
+        self.b_video.setCheckable(True)
+        self.b_video.setObjectName("seg")
+        self.b_audio = QPushButton("Audio")
+        self.b_audio.setCheckable(True)
+        self.b_audio.setObjectName("seg")
         for b in (self.b_video, self.b_audio):
+            b.setCursor(Qt.PointingHandCursor)
             self.bg.addButton(b)
         self.b_video.setChecked(True)
         self.bg.buttonClicked.connect(lambda *_: self._fill_qualities())
-        seg = QHBoxLayout(); seg.setSpacing(8); seg.addWidget(self.b_video); seg.addWidget(self.b_audio); seg.addStretch(1)
+        seg = QHBoxLayout(seg_box)
+        seg.setContentsMargins(4, 4, 4, 4)
+        seg.setSpacing(2)
+        seg.addWidget(self.b_video)
+        seg.addWidget(self.b_audio)
+        seg.addStretch(1)
 
         self.quality = QualityPicker()
         self.codec = CodecPicker()
-        self.codec_lbl = QLabel("Codec")
-        self.codec_lbl.setObjectName("hint")
-        self.folder_lbl = QLabel(); self.folder_lbl.setObjectName("hint")
-        btn_folder = QPushButton(); btn_folder.setObjectName("ghost")
-        btn_folder.setIcon(icon("folder"))
-        btn_folder.setFixedSize(36, 36)
+        self.codec_lbl = _label("CODEC", "hint")
+        self.codec_lbl.setStyleSheet(f"color:{theme.DIM}; font-size:11px; letter-spacing:1px;")
+
+        self.folder_lbl = QLabel()
+        self.folder_lbl.setObjectName("hint")
+        btn_folder = QPushButton()
+        btn_folder.setObjectName("ghost")
+        btn_folder.setIcon(icon("folder", theme.MUTED))
+        btn_folder.setFixedSize(32, 32)
         btn_folder.setToolTip("Change download folder")
         btn_folder.setCursor(Qt.PointingHandCursor)
         btn_folder.clicked.connect(self.pick_folder)
-        frow = QHBoxLayout(); frow.setSpacing(6); frow.addWidget(self.folder_lbl, 1); frow.addWidget(btn_folder)
+        frow = QHBoxLayout()
+        frow.setSpacing(theme.SM)
+        frow.addWidget(self.folder_lbl, 1)
+        frow.addWidget(btn_folder)
 
-        self.btn = QPushButton(); self.btn.setObjectName("primary")
-        self.btn.setIcon(icon("download", "#0a1020", 22))
-        self.btn.setFixedSize(84, 46)
+        self.btn = QPushButton("Download")
+        self.btn.setObjectName("primary")
+        self.btn.setIcon(icon("download", "#0a1020", 18))
+        self.btn.setMinimumSize(160, 46)
         self.btn.setToolTip("Download")
         self.btn.setCursor(Qt.PointingHandCursor)
         self.btn.clicked.connect(self.start)
-        brow = QHBoxLayout(); brow.addStretch(1); brow.addWidget(self.btn)
+        brow = QHBoxLayout()
+        brow.addStretch(1)
+        brow.addWidget(self.btn)
 
-        hint = QLabel("H.264/AAC is copied straight from the source when available; 1440p and 2160p are re-encoded once.")
+        hint = QLabel("H.264/AAC is copied straight from the source when available; "
+                      "1440p and 2160p are re-encoded once.")
         hint.setObjectName("hint")
+        hint.setWordWrap(True)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 22, 28, 24)
-        lay.setSpacing(14)
-        lay.addWidget(title); lay.addWidget(sub); lay.addSpacing(4)
+        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.LG)
+        lay.setSpacing(theme.MD - 2)
+        lay.addWidget(title)
+        lay.addWidget(sub)
+        lay.addSpacing(theme.XS)
         lay.addLayout(row)
         lay.addWidget(self.preview)
-        lay.addLayout(seg)
+        lay.addSpacing(theme.XS)
+        lay.addWidget(seg_box, 0, Qt.AlignLeft)
+        lay.addSpacing(theme.XS)
         lay.addWidget(self.quality)
-        lay.addSpacing(2)
+        lay.addSpacing(theme.SM)
         lay.addWidget(self.codec_lbl)
         lay.addWidget(self.codec)
+        lay.addSpacing(theme.SM)
         lay.addLayout(frow)
         lay.addLayout(brow)
         lay.addWidget(hint)
         lay.addStretch(1)
 
         self._fill_qualities()
-        self._timer = QTimer(self); self._timer.setSingleShot(True)
+        self._sync_button()
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._fetch_preview)
 
     def _host(self) -> str:
@@ -377,7 +419,7 @@ class HomePage(QWidget):
         if not url.startswith(("http://", "https://")):
             self.preview.setVisible(False)
             return
-        self.p_title.setText("Loading preview…")
+        self.p_title.setText("Fetching preview…")
         self.p_meta.setText("")
         self.p_thumb.setPixmap(QPixmap())
         self.p_thumb.setText("…")
@@ -395,10 +437,9 @@ class HomePage(QWidget):
         self.preview.setVisible(True)
 
     def _preview_failed(self, msg: str):
+        # A dead link should not leave a broken card behind.
         self.meta = {}
-        self.p_title.setText("Preview unavailable")
-        self.p_meta.setText(msg)
-        self.preview.setVisible(True)
+        self.preview.setVisible(False)
 
     def paste(self):
         cb = self.win.clipboard_text()
@@ -426,6 +467,9 @@ class HomePage(QWidget):
         key = "video_dir" if self.kind() == "video" else "audio_dir"
         self.folder_lbl.setText("Saving to  " + self.settings.get(key, ""))
 
+    def _sync_button(self):
+        self.btn.setEnabled(bool(self.url.text().strip()) and not self._busy)
+
     def pick_folder(self):
         key = "video_dir" if self.kind() == "video" else "audio_dir"
         d = QFileDialog.getExistingDirectory(self, "Choose download folder", self.settings[key])
@@ -436,58 +480,113 @@ class HomePage(QWidget):
 
     def start(self):
         url = self.url.text().strip()
-        if not url:
+        if not url or self._busy:
             return
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         self.win.manager.add(url, self.kind(), self.quality.value(), self.codec.value())
-        self.win.flash("Added to Downloads")
+        self._busy = True
+        self.btn.setText("Starting…")
+        self._sync_button()
+        QTimer.singleShot(900, self._idle)
         self.win.go(1)
+
+    def _idle(self):
+        self._busy = False
+        self.btn.setText("Download")
+        self._sync_button()
 
 
 # ---------------------------------------------------------------- downloads
-class Card(QFrame):
+class DownloadCard(QFrame):
     def __init__(self, job, win: "MainWindow"):
         super().__init__()
         self.job_id = job.id
         self.win = win
         self.setObjectName("card")
 
-        self.title = QLabel(); self.title.setObjectName("cardTitle")
-        self.meta = QLabel(); self.meta.setObjectName("hint")
-        self.bar = QProgressBar(); self.bar.setRange(0, 1000); self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(8)
-        self.pct = QLabel(); self.pct.setObjectName("muted"); self.pct.setFixedWidth(48)
+        self.thumb = Thumb(112, 63)
+        self.title = ElidedLabel()
+        self.title.setObjectName("cardTitle")
+        self.badge = Badge()
+        self.meta = ElidedLabel()
+        self.meta.setObjectName("hint")
+        self.bar = SmoothBar()
+        self.pct = _label("", "muted")
         self.pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.stats = QLabel(); self.stats.setObjectName("hint")
+        self.pct.setFixedWidth(42)
+        self.stats = ElidedLabel()
+        self.stats.setObjectName("hint")
 
-        self.b_toggle = QPushButton(); self.b_toggle.setObjectName("ghost")
-        self.b_toggle.setIcon(icon("pause")); self.b_toggle.setFixedSize(34, 34)
-        self.b_toggle.setToolTip("Pause")
+        self.b_toggle = HoverIconButton("pause", "Pause", color=theme.MUTED)
         self.b_toggle.clicked.connect(lambda: win.toggle(self.job_id))
-        self.b_cancel = QPushButton(); self.b_cancel.setObjectName("ghost")
-        self.b_cancel.setIcon(icon("close")); self.b_cancel.setFixedSize(34, 34)
-        self.b_cancel.setToolTip("Cancel download")
-        self.b_cancel.clicked.connect(lambda: win.manager.cancel(self.job_id))
+        self.b_retry = HoverIconButton("refresh", "Retry", color=theme.MUTED)
+        self.b_retry.clicked.connect(lambda: win.retry(self.job_id))
+        self.b_remove = HoverIconButton("close", "Remove from list", color=theme.MUTED)
+        self.b_remove.clicked.connect(lambda: win.hide_job(self.job_id))
+        self.b_details = QPushButton("Details")
+        self.b_details.setObjectName("ghost")
+        self.b_details.setCursor(Qt.PointingHandCursor)
+        self.b_details.setStyleSheet("font-size:11.5px; padding:2px 6px;")
+        self.b_details.clicked.connect(self._toggle_details)
+        self.raw = QLabel()
+        self.raw.setObjectName("hint")
+        self.raw.setWordWrap(True)
+        self.raw.setVisible(False)
 
-        top = QHBoxLayout(); top.setSpacing(10)
-        top.addWidget(self.title, 1); top.addWidget(self.pct)
-        bar = QHBoxLayout(); bar.setSpacing(10)
-        bar.addWidget(self.bar, 1); bar.addWidget(self.stats)
-        bottom = QHBoxLayout(); bottom.setSpacing(2)
-        bottom.addWidget(self.meta, 1); bottom.addWidget(self.b_toggle); bottom.addWidget(self.b_cancel)
+        head = QHBoxLayout()
+        head.setSpacing(theme.SM)
+        head.addWidget(self.title, 1)
+        head.addWidget(self.badge)
+        head.addWidget(self.pct)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 13, 12, 11)
-        lay.setSpacing(8)
-        lay.addLayout(top); lay.addLayout(bar); lay.addLayout(bottom)
+        bar = QHBoxLayout()
+        bar.setSpacing(theme.SM)
+        bar.addWidget(self.bar, 1)
+        bar.addWidget(self.stats)
+
+        foot = QHBoxLayout()
+        foot.setSpacing(2)
+        foot.addWidget(self.meta, 1)
+        foot.addWidget(self.b_details)
+        foot.addWidget(self.b_retry)
+        foot.addWidget(self.b_toggle)
+        foot.addWidget(self.b_remove)
+
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addLayout(head)
+        col.addLayout(bar)
+        col.addLayout(foot)
+        col.addWidget(self.raw)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(14)
+        lay.addWidget(self.thumb)
+        lay.addLayout(col, 1)
+
+        vid = _video_id(job.url)
+        if vid and _thumb_path(vid).exists():
+            self.thumb.load(str(_thumb_path(vid)))
+        elif vid:
+            win.request_thumb(vid, job.url)
         self.refresh(job)
+
+    def set_thumb(self, path: str):
+        self.thumb.load(path)
+
+    def _toggle_details(self):
+        self.raw.setVisible(not self.raw.isVisible())
 
     def refresh(self, job):
         self.title.setText(job.title or job.url)
         kind = "Video" if job.kind == "video" else "Audio"
-        self.meta.setText(f"{kind} · {job.quality} · {job.status}" + (f" · {job.error}" if job.error else ""))
-        self.bar.setValue(int(job.pct * 10))
+        codec = " · Original" if job.kind == "video" and job.codec == "original" else ""
+        self.meta.setText(f"{kind} · {job.quality}{codec}")
+        text, color = STATUS_TEXT.get(job.status, (job.status, theme.MUTED))
+        self.badge.set_state(text, color)
+        self.bar.set_pct(job.pct)
         self.pct.setText(f"{job.pct:.0f}%" if job.pct else "")
         bits = []
         if job.speed:
@@ -495,38 +594,62 @@ class Card(QFrame):
         if job.eta:
             bits.append(_hms(job.eta) + " left")
         self.stats.setText("  ·  ".join(bits))
-        running = job.status in (RUNNING, PENDING)
-        self.b_toggle.setIcon(icon("pause" if running else "play"))
-        self.b_toggle.setToolTip("Pause" if running else "Resume")
-        self.b_toggle.setVisible(job.status != DONE)
+
+        active = job.status in (RUNNING, PENDING, PAUSED)
+        self.b_toggle.setVisible(active)
+        name = "pause" if job.status in (RUNNING, PENDING) else "play"
+        self.b_toggle._name = name
+        self.b_toggle.setToolTip("Pause" if name == "pause" else "Resume")
+        self.b_toggle.setIcon(icon(name, theme.MUTED))
+        self.b_retry.setVisible(job.status in (ERROR, CANCELED))
+        self.b_details.setVisible(bool(job.error))
+        if job.error:
+            self.badge.setToolTip(_friendly_error(job.error))
+            self.raw.setText(job.error)
 
 
 class DownloadsPage(QWidget):
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
-        self.cards: dict[str, Card] = {}
+        self.cards: dict[str, DownloadCard] = {}
 
-        t = QLabel("Downloads"); t.setObjectName("pageTitle")
-        self.count = QLabel(); self.count.setObjectName("muted")
-        head = QHBoxLayout(); head.addWidget(t); head.addWidget(self.count); head.addStretch(1)
+        t = _label("Downloads", "pageTitle")
+        self.count = _label("", "muted")
+        self.btn_clear = QPushButton("Clear finished")
+        self.btn_clear.setObjectName("ghost")
+        self.btn_clear.setCursor(Qt.PointingHandCursor)
+        self.btn_clear.clicked.connect(win.clear_finished)
+        head = QHBoxLayout()
+        head.setSpacing(theme.SM)
+        head.addWidget(t)
+        head.addWidget(self.count)
+        head.addStretch(1)
+        head.addWidget(self.btn_clear)
 
-        self.empty = QLabel("↓\n\nNo active downloads\nPaste a link on the Home tab to start one")
-        self.empty.setObjectName("emptyState"); self.empty.setAlignment(Qt.AlignCenter)
-
+        self.empty = EmptyState("↓", "No downloads yet",
+                                "Paste a link on the Home tab to start one.")
         self.holder = QWidget()
         self.list = QVBoxLayout(self.holder)
-        self.list.setContentsMargins(0, 0, 6, 0); self.list.setSpacing(10); self.list.addStretch(1)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.holder)
-        scroll.viewport().setStyleSheet("background:transparent;")
+        self.list.setContentsMargins(0, 0, 6, 0)
+        self.list.setSpacing(theme.SM + 2)
+        self.list.addStretch(1)
+        scroll = SlimScroll()
+        scroll.setWidget(self.holder)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 22, 28, 22); lay.setSpacing(12)
-        lay.addLayout(head); lay.addWidget(self.empty); lay.addWidget(scroll, 1)
+        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.LG)
+        lay.setSpacing(theme.MD - 4)
+        lay.addLayout(head)
+        lay.addWidget(self.empty, 1)
+        lay.addWidget(scroll, 1)
+
+    def visible_jobs(self) -> list[str]:
+        return [jid for jid in self.win.manager.order
+                if (j := self.win.manager.jobs.get(jid)) and not j.hidden]
 
     def rebuild(self):
-        active = [jid for jid in self.win.manager.order
-                  if (j := self.win.manager.jobs.get(jid)) and j.status != DONE]
+        jobs = self.visible_jobs()
         for c in self.cards.values():
             c.setParent(None)
         self.cards.clear()
@@ -534,15 +657,52 @@ class DownloadsPage(QWidget):
             it = self.list.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
-        for jid in active:
-            c = Card(self.win.manager.jobs[jid], self.win)
+        for jid in jobs:
+            c = DownloadCard(self.win.manager.jobs[jid], self.win)
             self.cards[jid] = c
             self.list.insertWidget(self.list.count() - 1, c)
-        self.count.setText(f"· {len(active)}" if active else "")
-        self.empty.setVisible(not active)
+            fade_in(c, 150)
+        self.count.setText(f"· {len(jobs)}" if jobs else "")
+        self.empty.setVisible(not jobs)
+        self.btn_clear.setVisible(any(self.win.manager.jobs[j].status in (DONE, CANCELED)
+                                      for j in jobs))
+
+    def set_thumb(self, vid: str, path: str):
+        for c in self.cards.values():
+            j = self.win.manager.get(c.job_id)
+            if j and _video_id(j.url) == vid:
+                c.set_thumb(path)
 
 
 # ---------------------------------------------------------------- media
+class MediaThumb(Thumb):
+    """Thumbnail with a play button that appears on hover."""
+
+    def __init__(self, w=128, h=72):
+        super().__init__(w, h, big=True)
+        self.play = QPushButton(self)
+        self.play.setObjectName("primary")
+        self.play.setIcon(icon("play", "#0a1020", 16))
+        self.play.setFixedSize(34, 34)
+        self.play.setCursor(Qt.PointingHandCursor)
+        self.play.setStyleSheet("border-radius:17px; padding:0;")
+        self.play.hide()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.play.move((self.width() - self.play.width()) // 2,
+                       (self.height() - self.play.height()) // 2)
+
+    def enterEvent(self, e):
+        self.play.show()
+        self.play.raise_()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.play.hide()
+        super().leaveEvent(e)
+
+
 class MediaCard(QFrame):
     def __init__(self, job, win: "MainWindow"):
         super().__init__()
@@ -550,42 +710,85 @@ class MediaCard(QFrame):
         self.win = win
         self.setObjectName("card")
 
-        self.thumb = Thumb(128, 72)
-        self.title = QLabel(job.title or job.url); self.title.setObjectName("cardTitle"); self.title.setWordWrap(True)
+        self.thumb = MediaThumb(128, 72)
+        self.thumb.play.clicked.connect(lambda: win.open_player(self.job_id))
+        self.title = ElidedLabel(job.title or job.url)
+        self.title.setObjectName("cardTitle")
+
         kind = "Video" if job.kind == "video" else "Audio"
         size = ""
         try:
             if job.filepath and Path(job.filepath).exists():
                 mb = Path(job.filepath).stat().st_size / 1048576
-                size = f"{mb:.0f} MB" if mb >= 1 else f"{mb*1024:.0f} KB"
+                size = f"{mb:.0f} MB" if mb >= 1 else f"{mb * 1024:.0f} KB"
         except Exception:
             pass
-        meta = "  ·  ".join([b for b in (kind, job.quality, size) if b])
-        self.meta = QLabel(meta); self.meta.setObjectName("hint")
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for text in [b for b in (kind, job.quality, size) if b]:
+            chip = QLabel(text)
+            chip.setStyleSheet(f"background:{theme.TRACK}; color:{theme.MUTED};"
+                               f"border-radius:7px; padding:2px 8px; font-size:11px;")
+            chips.addWidget(chip)
+        chips.addStretch(1)
 
-        b_play = QPushButton(); b_play.setObjectName("ghost")
-        b_play.setIcon(icon("play")); b_play.setFixedSize(34, 34); b_play.setToolTip("Play")
-        b_play.setCursor(Qt.PointingHandCursor)
-        b_play.clicked.connect(lambda: win.open_player(self.job_id))
-        b_open = QPushButton(); b_open.setObjectName("ghost")
-        b_open.setIcon(icon("folder")); b_open.setFixedSize(34, 34); b_open.setToolTip("Show in folder")
-        b_open.setCursor(Qt.PointingHandCursor)
-        b_open.clicked.connect(lambda: win.reveal(self.job_id))
-        b_del = QPushButton(); b_del.setObjectName("danger")
-        b_del.setIcon(icon("trash", "#a87878")); b_del.setFixedSize(34, 34)
-        b_del.setToolTip("Delete file")
-        b_del.setCursor(Qt.PointingHandCursor)
-        b_del.clicked.connect(lambda: win.delete_media(self.job_id))
-        btns = QHBoxLayout(); btns.setSpacing(2)
-        btns.addWidget(b_play); btns.addWidget(b_open); btns.addWidget(b_del)
+        self.b_play = HoverIconButton("play", "Play")
+        self.b_play.clicked.connect(lambda: win.open_player(self.job_id))
+        self.b_open = HoverIconButton("folder", "Show in folder")
+        self.b_open.clicked.connect(lambda: win.reveal(self.job_id))
+        self.b_del = HoverIconButton("trash", "Delete file")
+        self.b_del.clicked.connect(self._ask_delete)
+        actions = QHBoxLayout()
+        actions.setSpacing(2)
+        actions.addWidget(self.b_play)
+        actions.addWidget(self.b_open)
+        actions.addWidget(self.b_del)
 
-        col = QVBoxLayout(); col.setSpacing(4); col.addStretch(1)
-        col.addWidget(self.title); col.addWidget(self.meta); col.addStretch(1)
-        col2 = QHBoxLayout(); col2.addLayout(col, 1); col2.addLayout(btns)
+        self.action_row = QWidget()
+        ar = QHBoxLayout(self.action_row)
+        ar.setContentsMargins(0, 0, 0, 0)
+        ar.addLayout(actions)
+
+        self.confirm = QWidget()
+        cf = QHBoxLayout(self.confirm)
+        cf.setContentsMargins(0, 0, 0, 0)
+        cf.setSpacing(6)
+        ask = QLabel("Delete file?")
+        ask.setStyleSheet(f"color:{theme.MUTED}; font-size:12px;")
+        yes = QPushButton("Delete")
+        yes.setCursor(Qt.PointingHandCursor)
+        yes.setStyleSheet(f"color:{theme.ERROR}; padding:5px 10px;")
+        yes.clicked.connect(lambda: win.delete_media(self.job_id))
+        no = QPushButton("Cancel")
+        no.setObjectName("ghost")
+        no.setCursor(Qt.PointingHandCursor)
+        no.clicked.connect(self._cancel_delete)
+        cf.addWidget(ask)
+        cf.addWidget(yes)
+        cf.addWidget(no)
+        self.confirm.hide()
+
+        right = QVBoxLayout()
+        right.setSpacing(4)
+        right.addWidget(self.action_row, 0, Qt.AlignRight)
+        right.addStretch(1)
+        right.addWidget(self.confirm, 0, Qt.AlignRight)
+
+        col = QVBoxLayout()
+        col.setSpacing(5)
+        col.addStretch(1)
+        col.addWidget(self.title)
+        col.addLayout(chips)
+        col.addStretch(1)
+        col2 = QHBoxLayout()
+        col2.addLayout(col, 1)
+        col2.addLayout(right)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 12); lay.setSpacing(14)
-        lay.addWidget(self.thumb); lay.addLayout(col2, 1)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(14)
+        lay.addWidget(self.thumb)
+        lay.addLayout(col2, 1)
 
         vid = _video_id(job.url)
         if vid:
@@ -593,7 +796,26 @@ class MediaCard(QFrame):
             if p.exists():
                 self.thumb.load(str(p))
             else:
-                win.request_thumb(vid, job.url, self)
+                win.request_thumb(vid, job.url)
+
+    def _ask_delete(self):
+        self.action_row.hide()
+        self.confirm.show()
+        QTimer.singleShot(5000, self._cancel_delete)
+
+    def _cancel_delete(self):
+        self.confirm.hide()
+        self.action_row.show()
+
+    def enterEvent(self, e):
+        for b in (self.b_play, self.b_open, self.b_del):
+            b.brighten(True)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        for b in (self.b_play, self.b_open, self.b_del):
+            b.brighten(False)
+        super().leaveEvent(e)
 
     def set_thumb(self, path: str):
         self.thumb.load(path)
@@ -605,27 +827,33 @@ class MediaPage(QWidget):
         self.win = win
         self.cards: dict[str, MediaCard] = {}
 
-        t = QLabel("Media"); t.setObjectName("pageTitle")
-        self.count = QLabel(); self.count.setObjectName("muted")
-        btn_open = QPushButton(); btn_open.setObjectName("ghost")
-        btn_open.setIcon(icon("folder")); btn_open.setFixedSize(34, 34)
-        btn_open.setToolTip("Open download folder")
-        btn_open.setCursor(Qt.PointingHandCursor)
+        t = _label("Media", "pageTitle")
+        self.count = _label("", "muted")
+        btn_open = HoverIconButton("folder", "Open download folder")
         btn_open.clicked.connect(win.open_output_folder)
-        head = QHBoxLayout(); head.addWidget(t); head.addWidget(self.count); head.addStretch(1); head.addWidget(btn_open)
+        head = QHBoxLayout()
+        head.setSpacing(theme.SM)
+        head.addWidget(t)
+        head.addWidget(self.count)
+        head.addStretch(1)
+        head.addWidget(btn_open)
 
-        self.empty = QLabel("▤\n\nNo media yet\nFinished downloads appear here with a preview")
-        self.empty.setObjectName("emptyState"); self.empty.setAlignment(Qt.AlignCenter)
-
+        self.empty = EmptyState("▤", "Nothing here yet",
+                                "Finished downloads show up here with a preview.")
         self.holder = QWidget()
         self.list = QVBoxLayout(self.holder)
-        self.list.setContentsMargins(0, 0, 6, 0); self.list.setSpacing(10); self.list.addStretch(1)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(self.holder)
-        scroll.viewport().setStyleSheet("background:transparent;")
+        self.list.setContentsMargins(0, 0, 6, 0)
+        self.list.setSpacing(theme.SM + 2)
+        self.list.addStretch(1)
+        scroll = SlimScroll()
+        scroll.setWidget(self.holder)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 22, 28, 22); lay.setSpacing(12)
-        lay.addLayout(head); lay.addWidget(self.empty); lay.addWidget(scroll, 1)
+        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.LG)
+        lay.setSpacing(theme.MD - 4)
+        lay.addLayout(head)
+        lay.addWidget(self.empty, 1)
+        lay.addWidget(scroll, 1)
 
     def ready(self) -> list:
         """Finished jobs whose file still exists; one entry per file on disk."""
@@ -657,6 +885,7 @@ class MediaPage(QWidget):
             c = MediaCard(job, self.win)
             self.cards[job.id] = c
             self.list.insertWidget(self.list.count() - 1, c)
+            fade_in(c, 150)
         self.count.setText(f"· {len(items)}" if items else "")
         self.empty.setVisible(not items)
 
@@ -680,29 +909,51 @@ class PlayerPage(QWidget):
         self.video = QVideoWidget()
         self.player.setVideoOutput(self.video)
 
-        self.title = QLabel(); self.title.setStyleSheet("font-size:15px; font-weight:600;")
-        self.back_btn = QPushButton(); self.back_btn.setObjectName("ghost")
-        self.back_btn.setIcon(icon("back")); self.back_btn.setFixedSize(34, 34)
+        self.title = ElidedLabel()
+        self.title.setObjectName("sectionTitle")
+        self.back_btn = QPushButton()
+        self.back_btn.setObjectName("ghost")
+        self.back_btn.setIcon(icon("back", theme.MUTED))
+        self.back_btn.setFixedSize(34, 34)
         self.back_btn.setToolTip("Back")
+        self.back_btn.setCursor(Qt.PointingHandCursor)
         self.back_btn.clicked.connect(self.back.emit)
-        head = QHBoxLayout(); head.addWidget(self.back_btn); head.addWidget(self.title, 1)
+        head = QHBoxLayout()
+        head.setSpacing(theme.SM)
+        head.addWidget(self.back_btn)
+        head.addWidget(self.title, 1)
 
-        self.play_btn = QPushButton(); self.play_btn.setFixedWidth(38); self.play_btn.setObjectName("ghost")
-        self.play_btn.setIcon(icon("pause"))
+        self.play_btn = QPushButton()
+        self.play_btn.setFixedSize(38, 38)
+        self.play_btn.setObjectName("ghost")
+        self.play_btn.setIcon(icon("pause", theme.TEXT))
+        self.play_btn.setCursor(Qt.PointingHandCursor)
         self.play_btn.clicked.connect(self.toggle)
-        self.time = QLabel("0:00 / 0:00"); self.time.setObjectName("hint")
-        self.slider = SeekSlider(Qt.Horizontal); self.slider.setRange(0, 0)
+        self.time = _label("0:00 / 0:00", "hint")
+        self.slider = SeekSlider(Qt.Horizontal)
+        self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.player.setPosition)
-        vol = QSlider(Qt.Horizontal); vol.setRange(0, 100); vol.setValue(85); vol.setFixedWidth(90)
+        vol = QSlider(Qt.Horizontal)
+        vol.setRange(0, 100)
+        vol.setValue(85)
+        vol.setFixedWidth(90)
         vol.valueChanged.connect(lambda v: self.audio.setVolume(v / 100))
+        vol_lbl = _label("Volume", "hint")
 
-        bar = QHBoxLayout(); bar.setSpacing(10)
-        bar.addWidget(self.play_btn); bar.addWidget(self.time); bar.addWidget(self.slider, 1)
-        bar.addWidget(QLabel("Volume")); bar.addWidget(vol)
+        bar = QHBoxLayout()
+        bar.setSpacing(theme.SM)
+        bar.addWidget(self.play_btn)
+        bar.addWidget(self.time)
+        bar.addWidget(self.slider, 1)
+        bar.addWidget(vol_lbl)
+        bar.addWidget(vol)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 16, 24, 18); lay.setSpacing(12)
-        lay.addLayout(head); lay.addWidget(self.video, 1); lay.addLayout(bar)
+        lay.setContentsMargins(theme.LG, theme.MD, theme.LG, theme.MD)
+        lay.setSpacing(theme.MD - 4)
+        lay.addLayout(head)
+        lay.addWidget(self.video, 1)
+        lay.addLayout(bar)
 
         self.player.positionChanged.connect(self._pos)
         self.player.durationChanged.connect(lambda d: self.slider.setRange(0, d))
@@ -713,13 +964,15 @@ class PlayerPage(QWidget):
         self.title.setText(title or Path(path).name)
         self.player.setSource(QUrl.fromLocalFile(path))
         self.player.play()
-        self.play_btn.setIcon(icon("pause"))
+        self.play_btn.setIcon(icon("pause", theme.TEXT))
 
     def toggle(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
-            self.player.pause(); self.play_btn.setIcon(icon("play"))
+            self.player.pause()
+            self.play_btn.setIcon(icon("play", theme.TEXT))
         else:
-            self.player.play(); self.play_btn.setIcon(icon("pause"))
+            self.player.play()
+            self.play_btn.setIcon(icon("pause", theme.TEXT))
 
     def _pos(self, ms):
         if not self.slider.isSliderDown():
@@ -728,13 +981,47 @@ class PlayerPage(QWidget):
 
     def _status(self, st):
         if st == QMediaPlayer.EndOfMedia:
-            self.play_btn.setIcon(icon("play"))
+            self.play_btn.setIcon(icon("play", theme.TEXT))
 
     def stop(self):
-        self.player.stop(); self.player.setSource(QUrl())
+        self.player.stop()
+        self.player.setSource(QUrl())
 
 
 # ---------------------------------------------------------------- window
+class NavButton(QPushButton):
+    """Sidebar item with an optional count badge."""
+
+    def __init__(self, text: str, icon_name: str):
+        super().__init__(f"   {text}")
+        self.setObjectName("nav")
+        self.setCheckable(True)
+        self.setIcon(icon(icon_name, theme.MUTED))
+        self.setCursor(Qt.PointingHandCursor)
+        self.badge = QLabel(self)
+        self.badge.setStyleSheet(f"background:{theme.ACCENT}; color:#0a1020; border-radius:8px;"
+                                 f"padding:1px 6px; font-size:10.5px; font-weight:700;")
+        self.badge.hide()
+        self._count = 0
+
+    def set_count(self, n: int):
+        self._count = n
+        if n <= 0:
+            self.badge.hide()
+            return
+        self.badge.setText(str(n))
+        self.badge.adjustSize()
+        self.badge.move(self.width() - self.badge.width() - 10,
+                        (self.height() - self.badge.height()) // 2)
+        self.badge.show()
+        self.badge.raise_()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._count > 0:
+            self.set_count(self._count)
+
+
 class MainWindow(QWidget):
     thumb_ready = Signal(str, str)
 
@@ -745,40 +1032,64 @@ class MainWindow(QWidget):
         self.setWindowTitle(f"{config.APP_NAME} {config.VERSION} by {config.AUTHOR}")
         from PySide6.QtWidgets import QApplication
         scr = QApplication.primaryScreen().availableGeometry()
-        w = min(1120, max(880, scr.width() - 140))
-        h = min(740, max(580, scr.height() - 140))
-        self.setMinimumSize(860, 540)
+        w = min(1180, max(960, scr.width() - 160))
+        h = min(780, max(640, scr.height() - 160))
+        self.setMinimumSize(900, 600)
         self.resize(w, h)
-        self.move(max(0, scr.x() + (scr.width() - w) // 2), max(0, scr.y() + (scr.height() - h) // 2))
-        self.setStyleSheet(QSS)
+        self.move(max(0, scr.x() + (scr.width() - w) // 2),
+                  max(0, scr.y() + (scr.height() - h) // 2))
+        self.setStyleSheet(theme.qss())
         self._last_page = 2
+        self._prev_status: dict[str, str] = {}
         self.thumb_ready.connect(self._thumb_arrived)
+        self.toaster = Toaster(self)
 
-        side = QWidget(); side.setObjectName("sidebar"); side.setFixedWidth(210)
+        side = QWidget()
+        side.setObjectName("sidebar")
+        side.setFixedWidth(216)
         logo = QLabel()
         mark = config.bundle_dir() / "assets" / "mark.png"
         if mark.exists():
-            logo.setPixmap(QPixmap(str(mark)).scaled(30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        brand = QLabel("Nimbus"); brand.setObjectName("brand")
-        brand_row = QHBoxLayout(); brand_row.setSpacing(10)
-        brand_row.addWidget(logo); brand_row.addWidget(brand); brand_row.addStretch(1)
-        self.nav_home = self._nav("Home", 0, "home")
-        self.nav_dl = self._nav("Downloads", 1, "download")
-        self.nav_media = self._nav("Media", 2, "media")
-        self.btn_update = QPushButton(); self.btn_update.setObjectName("nav")
-        self.btn_update.setIcon(icon("refresh")); self.btn_update.setFixedSize(38, 38)
+            logo.setPixmap(QPixmap(str(mark)).scaled(28, 28, Qt.KeepAspectRatio,
+                                                     Qt.SmoothTransformation))
+        brand = _label("Nimbus", "brand")
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(10)
+        brand_row.addWidget(logo)
+        brand_row.addWidget(brand)
+        brand_row.addStretch(1)
+
+        self.nav_home = NavButton("Home", "home")
+        self.nav_home.clicked.connect(lambda: self.go(0))
+        self.nav_dl = NavButton("Downloads", "download")
+        self.nav_dl.clicked.connect(lambda: self.go(1))
+        self.nav_media = NavButton("Media", "media")
+        self.nav_media.clicked.connect(lambda: self.go(2))
+
+        self.btn_update = QPushButton()
+        self.btn_update.setObjectName("nav")
+        self.btn_update.setIcon(icon("refresh", theme.MUTED))
+        self.btn_update.setFixedSize(38, 38)
         self.btn_update.setToolTip("Update yt-dlp")
+        self.btn_update.setCursor(Qt.PointingHandCursor)
         self.btn_update.clicked.connect(self.update_ytdlp)
-        foot = QLabel(f"v{config.VERSION} · by {config.AUTHOR}"); foot.setObjectName("hint")
+        foot = _label(f"v{config.VERSION} · by {config.AUTHOR}", "hint")
 
         sl = QVBoxLayout(side)
-        sl.setContentsMargins(14, 20, 14, 16); sl.setSpacing(4)
-        sl.addLayout(brand_row); sl.addSpacing(18)
-        sl.addWidget(self.nav_home); sl.addWidget(self.nav_dl); sl.addWidget(self.nav_media)
+        sl.setContentsMargins(14, theme.MD + 4, 14, theme.MD)
+        sl.setSpacing(4)
+        sl.addLayout(brand_row)
+        sl.addSpacing(theme.MD + 6)
+        sl.addWidget(self.nav_home)
+        sl.addWidget(self.nav_dl)
+        sl.addWidget(self.nav_media)
         sl.addStretch(1)
-        sl.addWidget(self.btn_update); sl.addSpacing(6); sl.addWidget(foot)
+        sl.addWidget(self.btn_update)
+        sl.addSpacing(4)
+        sl.addWidget(foot)
 
-        self.pages = QStackedWidget(); self.pages.setObjectName("content")
+        self.pages = QStackedWidget()
+        self.pages.setObjectName("content")
         self.page_home = HomePage(self)
         self.page_dl = DownloadsPage(self)
         self.page_media = MediaPage(self)
@@ -787,15 +1098,22 @@ class MainWindow(QWidget):
         for p in (self.page_home, self.page_dl, self.page_media, self.page_play):
             self.pages.addWidget(p)
 
-        self.status = QLabel(); self.status.setObjectName("muted")
+        self.status = _label("", "hint")
 
-        right = QVBoxLayout(); right.setContentsMargins(0, 0, 0, 0); right.setSpacing(0)
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(0)
         right.addWidget(self.pages, 1)
-        srow = QHBoxLayout(); srow.setContentsMargins(28, 6, 28, 10); srow.addWidget(self.status, 1)
+        srow = QHBoxLayout()
+        srow.setContentsMargins(theme.LG + 4, 2, theme.LG + 4, 8)
+        srow.addWidget(self.status, 1)
         right.addLayout(srow)
 
-        root = QHBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        root.addWidget(side); root.addLayout(right, 1)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(side)
+        root.addLayout(right, 1)
 
         self.manager.changed.connect(self._job_changed)
         self.manager.queue_changed.connect(self._queues_changed)
@@ -803,14 +1121,11 @@ class MainWindow(QWidget):
         self._queues_changed()
         self.go(0)
 
-        self._timer = QTimer(self); self._timer.timeout.connect(self._tick); self._timer.start(1000)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(1000)
 
-    def _nav(self, text: str, index: int, icon_name: str) -> QPushButton:
-        b = QPushButton(f"  {text}"); b.setObjectName("nav"); b.setCheckable(True)
-        b.setIcon(icon(icon_name)); b.setCursor(Qt.PointingHandCursor)
-        b.clicked.connect(lambda: self.go(index))
-        return b
-
+    # ---- navigation
     def go(self, index: int):
         if index != 3:
             self.page_play.stop()
@@ -822,6 +1137,30 @@ class MainWindow(QWidget):
         if index == 2:
             self.manager.purge_missing()
             self.page_media.rebuild()
+        if index < 3:  # a graphics effect over the native video surface breaks playback
+            page = self.pages.widget(index)
+            eff = page.graphicsEffect()
+            if not isinstance(eff, QGraphicsOpacityEffect):
+                eff = QGraphicsOpacityEffect(page)
+                page.setGraphicsEffect(eff)
+            eff.setOpacity(0.0)
+            anim = QPropertyAnimation(eff, b"opacity", self)
+            anim.setDuration(190)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.OutCubic)
+            anim.finished.connect(lambda: eff.setOpacity(1.0))
+            anim.start()
+            # never leave a page invisible if the animation is pre-empted
+            QTimer.singleShot(260, lambda: eff.setOpacity(1.0))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "toaster"):
+            self.toaster.reposition()
+
+    def toast(self, text: str, kind: str = "info"):
+        self.toaster.show(text, kind)
 
     def flash(self, text: str):
         self.status.setText(text)
@@ -831,21 +1170,54 @@ class MainWindow(QWidget):
         from PySide6.QtWidgets import QApplication
         return QApplication.clipboard().text().strip()
 
+    # ---- queue plumbing
     def _queues_changed(self):
         self.page_dl.rebuild()
         self.page_media.rebuild()
+        self._sync_badge()
+
+    def _sync_badge(self):
+        active = sum(1 for j in self.manager.jobs.values()
+                     if j.status in (PENDING, RUNNING, PROCESSING))
+        self.nav_dl.set_count(active)
 
     def _job_changed(self, job_id: str):
         job = self.manager.get(job_id)
         if not job:
             return
+        prev = self._prev_status.get(job_id)
+        self._prev_status[job_id] = job.status
+        if prev != job.status:
+            title = job.title or "Download"
+            short = title if len(title) <= 42 else title[:41] + "…"
+            if job.status == PENDING and prev is None:
+                self.toast(f"Download started · {short}", "info")
+            elif job.status == DONE:
+                self.toast(f"Download complete · {short}", "success")
+            elif job.status == ERROR:
+                self.toast(f"Failed · {_friendly_error(job.error)}", "error")
         card = self.page_dl.cards.get(job_id)
         if card:
             card.refresh(job)
-            if job.status == DONE:
-                self._queues_changed()
+        if job.status in (DONE, ERROR, CANCELED):
+            self._queues_changed()
+        self._sync_badge()
 
-    def request_thumb(self, vid: str, url: str, card):
+    def clear_finished(self):
+        n = self.manager.hide_finished()
+        if n:
+            self.toast(f"Cleared {n} finished item{'s' if n != 1 else ''}", "info")
+        self._queues_changed()
+
+    def hide_job(self, job_id: str):
+        self.manager.hide(job_id)
+        self._queues_changed()
+
+    def retry(self, job_id: str):
+        self.manager.resume(job_id)
+        self._queues_changed()
+
+    def request_thumb(self, vid: str, url: str):
         def work():
             fetcher = PreviewFetcher()
             fetcher.done.connect(lambda m: self.thumb_ready.emit(vid, m.get("thumb", "")))
@@ -853,9 +1225,12 @@ class MainWindow(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def _thumb_arrived(self, vid: str, path: str):
-        if path:
-            self.page_media.set_thumb(vid, path)
+        if not path:
+            return
+        self.page_media.set_thumb(vid, path)
+        self.page_dl.set_thumb(vid, path)
 
+    # ---- actions
     def toggle(self, job_id: str):
         job = self.manager.get(job_id)
         if not job:
@@ -870,9 +1245,11 @@ class MainWindow(QWidget):
         if job and job.filepath and Path(job.filepath).exists():
             self.page_play.open(job.filepath, job.title)
             self.pages.setCurrentIndex(3)
-            self.nav_home.setChecked(False); self.nav_dl.setChecked(False); self.nav_media.setChecked(False)
+            self.nav_home.setChecked(False)
+            self.nav_dl.setChecked(False)
+            self.nav_media.setChecked(False)
         else:
-            self.flash("File not found — it may have been moved or deleted")
+            self.toast("File not found — it may have been moved or deleted", "warning")
             self.page_media.rebuild()
 
     def reveal(self, job_id: str):
@@ -890,14 +1267,11 @@ class MainWindow(QWidget):
         if not job:
             return
         name = Path(job.filepath).name if job.filepath else (job.title or "this item")
-        ans = QMessageBox.question(
-            self, "Delete file",
-            f"Delete “{name}” from disk?\nThis cannot be undone.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans != QMessageBox.Yes:
-            return
         ok, msg = self.manager.delete_media(job_id)
-        self.flash("Deleted" if ok else msg)
+        if ok:
+            self.toast(f"Deleted · {name[:38]}", "info")
+        else:
+            self.toast(msg, "error")
         self._queues_changed()
 
     def open_output_folder(self):
@@ -905,8 +1279,9 @@ class MainWindow(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(self.page_home.settings.get(key, "")))
 
     def update_ytdlp(self):
-        self.flash("Updating yt-dlp…")
+        self.toast("Updating yt-dlp…", "info")
         self.btn_update.setEnabled(False)
+
         def work():
             ok, msg = update.update_ytdlp()
             QTimer.singleShot(0, lambda: self._update_done(ok, msg))
@@ -914,14 +1289,15 @@ class MainWindow(QWidget):
 
     def _update_done(self, ok: bool, msg: str):
         self.btn_update.setEnabled(True)
-        self.flash(msg)
+        self.toast(msg, "success" if ok else "error")
         if not ok:
             QMessageBox.warning(self, "Update", msg)
 
     def _tick(self):
-        running = [j for j in self.manager.jobs.values() if j.status in (RUNNING, "Processing")]
+        running = [j for j in self.manager.jobs.values() if j.status in (RUNNING, PROCESSING)]
         if running:
-            self.status.setText(f"{len(running)} downloading · {_human(sum(j.speed for j in running))}/s")
+            self.status.setText(f"{len(running)} downloading · "
+                                f"{_human(sum(j.speed for j in running))}/s")
         elif self.status.text().endswith("/s"):
             self.status.setText("")
 

@@ -34,6 +34,7 @@ class Job:
     quality: str
     outdir: str
     codec: str = "h264"  # "h264" (editors) | "original" (site best)
+    hidden: bool = False  # cleared from the Downloads list, still in Media
     title: str = ""
     status: str = PENDING
     pct: float = 0.0
@@ -171,6 +172,29 @@ class Manager(QObject):
             if job_id in self.order:
                 self.order.remove(job_id)
         self.save()
+
+    def hide(self, job_id: str):
+        """Drop a job from the Downloads list but keep its file in Media."""
+        job = self.jobs.get(job_id)
+        if not job:
+            return
+        if job.status in (RUNNING, PENDING, PROCESSING):
+            self.cancel(job_id)
+        job.hidden = True
+        self.changed.emit(job_id)
+        self.save()
+        self.queue_changed.emit()
+
+    def hide_finished(self) -> int:
+        n = 0
+        for job in self.jobs.values():
+            if job.status in (DONE, CANCELED) and not job.hidden:
+                job.hidden = True
+                n += 1
+        if n:
+            self.save()
+            self.queue_changed.emit()
+        return n
 
     # ---------- worker ----------
     def _run(self, job: Job):
