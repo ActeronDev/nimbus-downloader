@@ -24,8 +24,9 @@ from .downloader import (AUDIO_QUALITIES, CANCELED, DONE, ERROR, PAUSED,
                          PENDING, PROCESSING, RUNNING, VIDEO_QUALITIES, Manager,
                          _js_runtimes)
 from .icons import icon
-from .widgets import (Badge, ElidedLabel, EmptyState, HoverIconButton, SlimScroll,
-                      SmoothBar, Toaster, fade_in)
+from .widgets import (Badge, ElidedLabel, EmptyState, GlowPage, HoverIconButton,
+                      SlimScroll, SmoothBar, StatusBar, Toaster, add_shadow,
+                      dominant_color, fade_in)
 
 THUMBS = config.data_dir() / "thumbs"
 THUMBS.mkdir(parents=True, exist_ok=True)
@@ -263,7 +264,7 @@ def _label(text: str, name: str = "") -> QLabel:
 
 
 # ---------------------------------------------------------------- home
-class HomePage(QWidget):
+class HomePage(GlowPage):
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
@@ -364,8 +365,8 @@ class HomePage(QWidget):
         self.btn.setCursor(Qt.PointingHandCursor)
         self.btn.clicked.connect(self.start)
         brow = QHBoxLayout()
-        brow.addStretch(1)
         brow.addWidget(self.btn)
+        brow.addStretch(1)
 
         hint = QLabel("H.264/AAC is copied straight from the source when available; "
                       "1440p and 2160p are re-encoded once.")
@@ -608,7 +609,7 @@ class DownloadCard(QFrame):
             self.raw.setText(job.error)
 
 
-class DownloadsPage(QWidget):
+class DownloadsPage(GlowPage):
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
@@ -622,27 +623,29 @@ class DownloadsPage(QWidget):
         self.btn_clear.clicked.connect(win.clear_finished)
         head = QHBoxLayout()
         head.setSpacing(theme.SM)
+        head.setContentsMargins(0, 0, 8, 0)
         head.addWidget(t)
         head.addWidget(self.count)
         head.addStretch(1)
         head.addWidget(self.btn_clear)
 
-        self.empty = EmptyState("↓", "No downloads yet",
-                                "Paste a link on the Home tab to start one.")
+        self.empty = EmptyState("↓", "Nothing here yet",
+                                "Paste a link on the Home tab and your download shows up here.",
+                                "Go to Home", lambda: win.go(0))
         self.holder = QWidget()
         self.list = QVBoxLayout(self.holder)
-        self.list.setContentsMargins(0, 0, 6, 0)
-        self.list.setSpacing(theme.SM + 2)
+        self.list.setContentsMargins(0, 0, 8, 12)
+        self.list.setSpacing(12)
         self.list.addStretch(1)
-        scroll = SlimScroll()
-        scroll.setWidget(self.holder)
+        self.scroll = SlimScroll()
+        self.scroll.setWidget(self.holder)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.LG)
+        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.SM)
         lay.setSpacing(theme.MD - 4)
         lay.addLayout(head)
         lay.addWidget(self.empty, 1)
-        lay.addWidget(scroll, 1)
+        lay.addWidget(self.scroll, 1)
 
     def visible_jobs(self) -> list[str]:
         return [jid for jid in self.win.manager.order
@@ -664,6 +667,7 @@ class DownloadsPage(QWidget):
             fade_in(c, 150)
         self.count.setText(f"· {len(jobs)}" if jobs else "")
         self.empty.setVisible(not jobs)
+        self.scroll.setVisible(bool(jobs))
         self.btn_clear.setVisible(any(self.win.manager.jobs[j].status in (DONE, CANCELED)
                                       for j in jobs))
 
@@ -821,7 +825,7 @@ class MediaCard(QFrame):
         self.thumb.load(path)
 
 
-class MediaPage(QWidget):
+class MediaPage(GlowPage):
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
@@ -833,27 +837,29 @@ class MediaPage(QWidget):
         btn_open.clicked.connect(win.open_output_folder)
         head = QHBoxLayout()
         head.setSpacing(theme.SM)
+        head.setContentsMargins(0, 0, 8, 0)
         head.addWidget(t)
         head.addWidget(self.count)
         head.addStretch(1)
         head.addWidget(btn_open)
 
         self.empty = EmptyState("▤", "Nothing here yet",
-                                "Finished downloads show up here with a preview.")
+                                "Finished downloads show up here with a preview.",
+                                "Go to Home", lambda: win.go(0))
         self.holder = QWidget()
         self.list = QVBoxLayout(self.holder)
-        self.list.setContentsMargins(0, 0, 6, 0)
-        self.list.setSpacing(theme.SM + 2)
+        self.list.setContentsMargins(0, 0, 8, 12)
+        self.list.setSpacing(12)
         self.list.addStretch(1)
-        scroll = SlimScroll()
-        scroll.setWidget(self.holder)
+        self.scroll = SlimScroll()
+        self.scroll.setWidget(self.holder)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.LG)
+        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.SM)
         lay.setSpacing(theme.MD - 4)
         lay.addLayout(head)
         lay.addWidget(self.empty, 1)
-        lay.addWidget(scroll, 1)
+        lay.addWidget(self.scroll, 1)
 
     def ready(self) -> list:
         """Finished jobs whose file still exists; one entry per file on disk."""
@@ -888,6 +894,7 @@ class MediaPage(QWidget):
             fade_in(c, 150)
         self.count.setText(f"· {len(items)}" if items else "")
         self.empty.setVisible(not items)
+        self.scroll.setVisible(bool(items))
 
     def set_thumb(self, vid: str, path: str):
         for c in self.cards.values():
@@ -1098,16 +1105,14 @@ class MainWindow(QWidget):
         for p in (self.page_home, self.page_dl, self.page_media, self.page_play):
             self.pages.addWidget(p)
 
-        self.status = _label("", "hint")
+        self.statusbar = StatusBar()
+        self.statusbar.hide()
 
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(0)
         right.addWidget(self.pages, 1)
-        srow = QHBoxLayout()
-        srow.setContentsMargins(theme.LG + 4, 2, theme.LG + 4, 8)
-        srow.addWidget(self.status, 1)
-        right.addLayout(srow)
+        right.addWidget(self.statusbar)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1163,8 +1168,7 @@ class MainWindow(QWidget):
         self.toaster.show(text, kind)
 
     def flash(self, text: str):
-        self.status.setText(text)
-        QTimer.singleShot(2500, lambda: self.status.setText(""))
+        self.toast(text, "info")
 
     def clipboard_text(self) -> str:
         from PySide6.QtWidgets import QApplication
@@ -1296,10 +1300,12 @@ class MainWindow(QWidget):
     def _tick(self):
         running = [j for j in self.manager.jobs.values() if j.status in (RUNNING, PROCESSING)]
         if running:
-            self.status.setText(f"{len(running)} downloading · "
-                                f"{_human(sum(j.speed for j in running))}/s")
-        elif self.status.text().endswith("/s"):
-            self.status.setText("")
+            self.statusbar.set_active(f"{len(running)} downloading · "
+                                      f"{_human(sum(j.speed for j in running))}/s")
+            self.toaster.set_bottom_offset(38)
+        else:
+            self.statusbar.set_active("")
+            self.toaster.set_bottom_offset(8)
 
     def keyPressEvent(self, e):
         if self.pages.currentIndex() == 3 and e.key() == Qt.Key_Escape:
