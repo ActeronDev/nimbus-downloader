@@ -8,14 +8,16 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, QUrl, Qt, Signal, QObject
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, QRectF, QTimer, QUrl,
+                            QVariantAnimation, Qt, Signal, QObject)
+from PySide6.QtGui import (QColor, QDesktopServices, QLinearGradient, QPainter,
+                           QPainterPath, QPixmap, QRadialGradient)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QGridLayout,
-                               QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QSlider, QStackedWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QGraphicsDropShadowEffect,
+                               QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel,
+                               QLineEdit, QMessageBox, QPushButton, QSlider,
+                               QStackedWidget, QVBoxLayout, QWidget)
 
 import yt_dlp
 
@@ -24,9 +26,8 @@ from .downloader import (AUDIO_QUALITIES, CANCELED, DONE, ERROR, PAUSED,
                          PENDING, PROCESSING, RUNNING, VIDEO_QUALITIES, Manager,
                          _js_runtimes)
 from .icons import icon
-from .widgets import (Badge, ElidedLabel, EmptyState, GlowPage, HoverIconButton,
-                      SlimScroll, SmoothBar, StatusBar, Toaster, add_shadow,
-                      dominant_color, fade_in)
+from .widgets import (Badge, Card, ElidedLabel, EmptyState, GlowPage, HoverIconButton,
+                      LiveBar, SlimScroll, StatusBar, Toaster, dominant_color, rgba)
 
 THUMBS = config.data_dir() / "thumbs"
 THUMBS.mkdir(parents=True, exist_ok=True)
@@ -45,8 +46,8 @@ QUALITY_LABELS = {
 
 STATUS_TEXT = {
     PENDING: ("Queued", theme.WARNING),
-    RUNNING: ("Downloading", theme.ACCENT),
-    PROCESSING: ("Processing", theme.ACCENT),
+    RUNNING: ("Downloading", theme.ACCENT_A),
+    PROCESSING: ("Processing", theme.ACCENT_A),
     PAUSED: ("Paused", theme.WARNING),
     DONE: ("Completed", theme.SUCCESS),
     ERROR: ("Failed", theme.ERROR),
@@ -88,6 +89,33 @@ def _video_id(url: str) -> str:
 
 def _thumb_path(vid: str) -> Path:
     return THUMBS / f"{vid}.jpg"
+
+
+def _label(text: str, name: str = "") -> QLabel:
+    lbl = QLabel(text)
+    if name:
+        lbl.setObjectName(name)
+    return lbl
+
+
+def _tabular(lbl: QLabel):
+    """Tabular figures stop percentages and speeds from jiggling."""
+    f = lbl.font()
+    try:
+        f.setFeature("tnum", 1)
+        lbl.setFont(f)
+    except Exception:
+        pass
+
+
+def _size_text(path: str) -> str:
+    try:
+        if path and Path(path).exists():
+            mb = Path(path).stat().st_size / 1048576
+            return f"{mb:.0f} MB" if mb >= 1 else f"{mb * 1024:.0f} KB"
+    except Exception:
+        pass
+    return ""
 
 
 class PreviewFetcher(QObject):
@@ -172,19 +200,94 @@ class SeekSlider(QSlider):
 
 
 class Thumb(QLabel):
+    """Rounded thumbnail that zooms a hair on hover."""
+
     def __init__(self, w=160, h=90, big: bool = False):
         super().__init__()
         self.setFixedSize(w, h)
         self.setObjectName("thumbBig" if big else "thumb")
         self.setAlignment(Qt.AlignCenter)
+        self._path = ""
         self.setText("▶")
 
     def load(self, path: str):
-        if path and Path(path).exists():
-            pm = QPixmap(path).scaled(self.width(), self.height(),
-                                      Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            self.setPixmap(pm.copy(0, 0, self.width(), self.height()))
-            self.setText("")
+        self._path = path or ""
+        self._render(1.0)
+
+    def _render(self, zoom: float):
+        if not self._path or not Path(self._path).exists():
+            return
+        w, h = self.width(), self.height()
+        pm = QPixmap(self._path).scaled(int(w * zoom) + 2, int(h * zoom) + 2,
+                                        Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = max(0, (pm.width() - w) // 2)
+        y = max(0, (pm.height() - h) // 2)
+        self.setPixmap(pm.copy(x, y, w, h))
+        self.setText("")
+
+    def enterEvent(self, e):
+        if self._path:
+            self._render(1.04)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        if self._path:
+            self._render(1.0)
+        super().leaveEvent(e)
+
+
+class PillInput(QLineEdit):
+    """Big pill URL field with the paste button sitting inside it."""
+
+    def __init__(self, on_paste):
+        super().__init__()
+        self.setPlaceholderText("https://www.youtube.com/watch?v=…")
+        self.setMinimumHeight(56)
+        self.btn = QPushButton(self)
+        self.btn.setObjectName("ghost")
+        self.btn.setIcon(icon("paste", theme.MUTED))
+        self.btn.setFixedSize(40, 40)
+        self.btn.setToolTip("Paste link from clipboard")
+        self.btn.setCursor(Qt.PointingHandCursor)
+        self.btn.clicked.connect(on_paste)
+        self.setTextMargins(6, 0, 48, 0)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.btn.move(self.width() - 48, (self.height() - 40) // 2)
+
+
+class GlowCard(QFrame):
+    """Card that glows in the thumbnail's dominant colour."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        self._glow: QColor | None = None
+
+    def set_glow(self, color: QColor | None):
+        self._glow = color
+        self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not self._glow:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(1, 1, self.width() - 2, self.height() - 2),
+                            theme.R_CARD - 1, theme.R_CARD - 1)
+        p.setClipPath(path)
+        g = QRadialGradient(self.width() * 0.12, self.height() * 0.5,
+                            max(self.width() * 0.55, 260))
+        c = QColor(self._glow)
+        c.setAlphaF(0.20)
+        g.setColorAt(0.0, c)
+        c2 = QColor(self._glow)
+        c2.setAlphaF(0.0)
+        g.setColorAt(1.0, c2)
+        p.fillRect(self.rect(), g)
 
 
 # ---------------------------------------------------------------- pickers
@@ -256,13 +359,6 @@ class CodecPicker(QWidget):
         return b.property("value") if b else "h264"
 
 
-def _label(text: str, name: str = "") -> QLabel:
-    lbl = QLabel(text)
-    if name:
-        lbl.setObjectName(name)
-    return lbl
-
-
 # ---------------------------------------------------------------- home
 class HomePage(GlowPage):
     def __init__(self, win: "MainWindow"):
@@ -275,49 +371,36 @@ class HomePage(GlowPage):
         self.fetcher.done.connect(self._preview_ready)
         self.fetcher.failed.connect(self._preview_failed)
 
-        title = _label("Home", "pageTitle")
-        sub = _label("Paste a YouTube or TikTok link, pick what you want, hit Download.", "muted")
+        title = _label("What do you want to download?", "pageTitle")
+        sub = _label("Paste a YouTube or TikTok link, pick a quality, hit Download.", "muted")
 
-        self.url = QLineEdit()
-        self.url.setPlaceholderText("https://www.youtube.com/watch?v=…")
-        self.url.setMinimumHeight(52)
+        self.url = PillInput(self.paste)
         self.url.returnPressed.connect(self.start)
         self.url.textChanged.connect(self._queue_preview)
         self.url.textChanged.connect(self._sync_button)
-        btn_paste = QPushButton()
-        btn_paste.setObjectName("ghost")
-        btn_paste.setIcon(icon("paste", theme.MUTED))
-        btn_paste.setFixedSize(52, 52)
-        btn_paste.setToolTip("Paste link from clipboard")
-        btn_paste.setCursor(Qt.PointingHandCursor)
-        btn_paste.clicked.connect(self.paste)
-        row = QHBoxLayout()
-        row.setSpacing(theme.SM)
-        row.addWidget(self.url, 1)
-        row.addWidget(btn_paste)
 
-        self.preview = QFrame()
-        self.preview.setObjectName("card")
+        self.preview = GlowCard()
         self.preview.setVisible(False)
-        self.p_thumb = Thumb(176, 99)
+        self.p_thumb = Thumb(150, 84)
         self.p_title = ElidedLabel()
         self.p_title.setObjectName("cardTitle")
         self.p_meta = QLabel()
         self.p_meta.setObjectName("hint")
         pv = QHBoxLayout(self.preview)
-        pv.setContentsMargins(12, 12, 16, 12)
-        pv.setSpacing(14)
+        pv.setContentsMargins(12, 12, 18, 12)
+        pv.setSpacing(16)
         pv.addWidget(self.p_thumb)
         col = QVBoxLayout()
-        col.setSpacing(4)
+        col.setSpacing(6)
         col.addStretch(1)
         col.addWidget(self.p_title)
         col.addWidget(self.p_meta)
         col.addStretch(1)
         pv.addLayout(col, 1)
 
-        seg_box = QFrame()
-        seg_box.setObjectName("panel")
+        # ---- options panel
+        panel = QFrame()
+        panel.setObjectName("panel")
         self.bg = QButtonGroup(self)
         self.bg.setExclusive(True)
         self.b_video = QPushButton("Video")
@@ -331,8 +414,10 @@ class HomePage(GlowPage):
             self.bg.addButton(b)
         self.b_video.setChecked(True)
         self.bg.buttonClicked.connect(lambda *_: self._fill_qualities())
+        seg_box = QFrame()
+        seg_box.setStyleSheet(f"background:{theme.SIDEBAR}; border-radius:11px;")
         seg = QHBoxLayout(seg_box)
-        seg.setContentsMargins(4, 4, 4, 4)
+        seg.setContentsMargins(3, 3, 3, 3)
         seg.setSpacing(2)
         seg.addWidget(self.b_video)
         seg.addWidget(self.b_audio)
@@ -340,15 +425,15 @@ class HomePage(GlowPage):
 
         self.quality = QualityPicker()
         self.codec = CodecPicker()
-        self.codec_lbl = _label("CODEC", "hint")
-        self.codec_lbl.setStyleSheet(f"color:{theme.DIM}; font-size:11px; letter-spacing:1px;")
+        self.codec_lbl = _label("CODEC", "micro")
+        self.quality_lbl = _label("QUALITY", "micro")
 
         self.folder_lbl = QLabel()
         self.folder_lbl.setObjectName("hint")
         btn_folder = QPushButton()
         btn_folder.setObjectName("ghost")
         btn_folder.setIcon(icon("folder", theme.MUTED))
-        btn_folder.setFixedSize(32, 32)
+        btn_folder.setFixedSize(30, 30)
         btn_folder.setToolTip("Change download folder")
         btn_folder.setCursor(Qt.PointingHandCursor)
         btn_folder.clicked.connect(self.pick_folder)
@@ -357,42 +442,58 @@ class HomePage(GlowPage):
         frow.addWidget(self.folder_lbl, 1)
         frow.addWidget(btn_folder)
 
-        self.btn = QPushButton("Download")
-        self.btn.setObjectName("primary")
-        self.btn.setIcon(icon("download", "#0a1020", 18))
-        self.btn.setMinimumSize(160, 46)
-        self.btn.setToolTip("Download")
-        self.btn.setCursor(Qt.PointingHandCursor)
-        self.btn.clicked.connect(self.start)
-        brow = QHBoxLayout()
-        brow.addWidget(self.btn)
-        brow.addStretch(1)
-
         hint = QLabel("H.264/AAC is copied straight from the source when available; "
                       "1440p and 2160p are re-encoded once.")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.LG)
+        pl = QVBoxLayout(panel)
+        pl.setContentsMargins(theme.MD + 2, theme.MD, theme.MD + 2, theme.MD)
+        pl.setSpacing(theme.SM + 2)
+        pl.addWidget(seg_box, 0, Qt.AlignLeft)
+        pl.addSpacing(2)
+        pl.addWidget(self.quality_lbl)
+        pl.addWidget(self.quality)
+        pl.addSpacing(2)
+        pl.addWidget(self.codec_lbl)
+        pl.addWidget(self.codec)
+        pl.addSpacing(4)
+        pl.addLayout(frow)
+        pl.addWidget(hint)
+
+        self.btn = QPushButton("Download")
+        self.btn.setObjectName("primary")
+        self.btn.setIcon(icon("download", "#0a1020", 18))
+        self.btn.setMinimumSize(210, 48)
+        self.btn.setToolTip("Download")
+        self.btn.setCursor(Qt.PointingHandCursor)
+        self.btn.clicked.connect(self.start)
+
+        brow = QHBoxLayout()
+        brow.setContentsMargins(theme.LG + 4, theme.SM, theme.LG + 4, theme.SM)
+        brow.addWidget(self.btn)
+        brow.addStretch(1)
+
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.SM)
         lay.setSpacing(theme.MD - 2)
         lay.addWidget(title)
         lay.addWidget(sub)
-        lay.addSpacing(theme.XS)
-        lay.addLayout(row)
+        lay.addSpacing(theme.SM)
+        lay.addWidget(self.url)
         lay.addWidget(self.preview)
         lay.addSpacing(theme.XS)
-        lay.addWidget(seg_box, 0, Qt.AlignLeft)
-        lay.addSpacing(theme.XS)
-        lay.addWidget(self.quality)
-        lay.addSpacing(theme.SM)
-        lay.addWidget(self.codec_lbl)
-        lay.addWidget(self.codec)
-        lay.addSpacing(theme.SM)
-        lay.addLayout(frow)
-        lay.addLayout(brow)
-        lay.addWidget(hint)
+        lay.addWidget(panel)
         lay.addStretch(1)
+
+        scroll = SlimScroll()
+        scroll.setWidget(inner)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(scroll, 1)
+        outer.addLayout(brow)
 
         self._fill_qualities()
         self._sync_button()
@@ -400,6 +501,7 @@ class HomePage(GlowPage):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._fetch_preview)
 
+    # ---- preview
     def _host(self) -> str:
         from urllib.parse import urlparse
         return (urlparse(self.url.text().strip()).netloc or "").lower()
@@ -434,11 +536,13 @@ class HomePage(GlowPage):
         if meta.get("duration"):
             bits.append(_hms(meta["duration"]))
         self.p_meta.setText("  ·  ".join([b for b in bits if b]))
-        self.p_thumb.load(meta.get("thumb", ""))
+        thumb = meta.get("thumb", "")
+        self.p_thumb.load(thumb)
+        self.preview.set_glow(dominant_color(thumb) if thumb else None)
         self.preview.setVisible(True)
 
     def _preview_failed(self, msg: str):
-        # A dead link should not leave a broken card behind.
+        # a dead link should not leave a broken card behind
         self.meta = {}
         self.preview.setVisible(False)
 
@@ -456,6 +560,7 @@ class HomePage(GlowPage):
         else:
             options = AUDIO_QUALITIES
         self.quality.set_options(options)
+        self.quality_lbl.setVisible(video)
         self.codec_lbl.setVisible(video)
         self.codec.setVisible(video)
         if hasattr(self, "folder_lbl"):
@@ -497,14 +602,20 @@ class HomePage(GlowPage):
         self.btn.setText("Download")
         self._sync_button()
 
+    def enterEvent(self, e):
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+
 
 # ---------------------------------------------------------------- downloads
-class DownloadCard(QFrame):
+class DownloadCard(Card):
     def __init__(self, job, win: "MainWindow"):
         super().__init__()
         self.job_id = job.id
         self.win = win
-        self.setObjectName("card")
+        self._tint: QColor | None = None
 
         self.thumb = Thumb(112, 63)
         self.title = ElidedLabel()
@@ -512,10 +623,11 @@ class DownloadCard(QFrame):
         self.badge = Badge()
         self.meta = ElidedLabel()
         self.meta.setObjectName("hint")
-        self.bar = SmoothBar()
+        self.bar = LiveBar()
         self.pct = _label("", "muted")
         self.pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.pct.setFixedWidth(42)
+        self.pct.setFixedWidth(44)
+        _tabular(self.pct)
         self.stats = ElidedLabel()
         self.stats.setObjectName("hint")
 
@@ -569,13 +681,19 @@ class DownloadCard(QFrame):
 
         vid = _video_id(job.url)
         if vid and _thumb_path(vid).exists():
-            self.thumb.load(str(_thumb_path(vid)))
+            self._apply_thumb(str(_thumb_path(vid)))
         elif vid:
             win.request_thumb(vid, job.url)
         self.refresh(job)
 
-    def set_thumb(self, path: str):
+    def _apply_thumb(self, path: str):
         self.thumb.load(path)
+        self._tint = dominant_color(path)
+        self.bar.set_tint(self._tint)
+
+    def set_thumb(self, path: str):
+        if path:
+            self._apply_thumb(path)
 
     def _toggle_details(self):
         self.raw.setVisible(not self.raw.isVisible())
@@ -588,6 +706,7 @@ class DownloadCard(QFrame):
         text, color = STATUS_TEXT.get(job.status, (job.status, theme.MUTED))
         self.badge.set_state(text, color)
         self.bar.set_pct(job.pct)
+        self.bar.set_active(job.status in (RUNNING, PROCESSING))
         self.pct.setText(f"{job.pct:.0f}%" if job.pct else "")
         bits = []
         if job.speed:
@@ -608,6 +727,19 @@ class DownloadCard(QFrame):
             self.badge.setToolTip(_friendly_error(job.error))
             self.raw.setText(job.error)
 
+        if job.status == ERROR:
+            self.setStyleSheet(f"QFrame#card {{ border:1px solid {rgba(theme.ERROR, 0.45)}; }}")
+        elif self._tint:
+            self.setStyleSheet(f"QFrame#card {{ border:1px solid {rgba(self._tint, 0.35)}; }}")
+        else:
+            self.setStyleSheet("")
+
+    def enterEvent(self, e):
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+
 
 class DownloadsPage(GlowPage):
     def __init__(self, win: "MainWindow"):
@@ -617,6 +749,9 @@ class DownloadsPage(GlowPage):
 
         t = _label("Downloads", "pageTitle")
         self.count = _label("", "muted")
+        self.live = QLabel("")
+        self.live.setStyleSheet(f"color:{theme.ACCENT_A}; font-size:12px; font-weight:600;")
+        self.live.hide()
         self.btn_clear = QPushButton("Clear finished")
         self.btn_clear.setObjectName("ghost")
         self.btn_clear.setCursor(Qt.PointingHandCursor)
@@ -626,6 +761,7 @@ class DownloadsPage(GlowPage):
         head.setContentsMargins(0, 0, 8, 0)
         head.addWidget(t)
         head.addWidget(self.count)
+        head.addWidget(self.live)
         head.addStretch(1)
         head.addWidget(self.btn_clear)
 
@@ -651,6 +787,10 @@ class DownloadsPage(GlowPage):
         return [jid for jid in self.win.manager.order
                 if (j := self.win.manager.jobs.get(jid)) and not j.hidden]
 
+    def set_live(self, text: str):
+        self.live.setText(text)
+        self.live.setVisible(bool(text))
+
     def rebuild(self):
         jobs = self.visible_jobs()
         for c in self.cards.values():
@@ -664,7 +804,6 @@ class DownloadsPage(GlowPage):
             c = DownloadCard(self.win.manager.jobs[jid], self.win)
             self.cards[jid] = c
             self.list.insertWidget(self.list.count() - 1, c)
-            fade_in(c, 150)
         self.count.setText(f"· {len(jobs)}" if jobs else "")
         self.empty.setVisible(not jobs)
         self.scroll.setVisible(bool(jobs))
@@ -680,7 +819,7 @@ class DownloadsPage(GlowPage):
 
 # ---------------------------------------------------------------- media
 class MediaThumb(Thumb):
-    """Thumbnail with a play button that appears on hover."""
+    """Thumbnail with a play button that fades in on hover."""
 
     def __init__(self, w=128, h=72):
         super().__init__(w, h, big=True)
@@ -698,21 +837,32 @@ class MediaThumb(Thumb):
                        (self.height() - self.play.height()) // 2)
 
     def enterEvent(self, e):
+        super().enterEvent(e)
         self.play.show()
         self.play.raise_()
-        super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self.play.hide()
         super().leaveEvent(e)
+        self.play.hide()
 
 
-class MediaCard(QFrame):
+def _chip_row(labels: list[str]) -> QHBoxLayout:
+    chips = QHBoxLayout()
+    chips.setSpacing(6)
+    for text in labels:
+        chip = QLabel(text)
+        chip.setStyleSheet(f"background:{theme.TRACK}; color:{theme.MUTED};"
+                           f"border-radius:7px; padding:2px 8px; font-size:11px;")
+        chips.addWidget(chip)
+    chips.addStretch(1)
+    return chips
+
+
+class MediaCard(Card):
     def __init__(self, job, win: "MainWindow"):
         super().__init__()
         self.job_id = job.id
         self.win = win
-        self.setObjectName("card")
 
         self.thumb = MediaThumb(128, 72)
         self.thumb.play.clicked.connect(lambda: win.open_player(self.job_id))
@@ -720,21 +870,7 @@ class MediaCard(QFrame):
         self.title.setObjectName("cardTitle")
 
         kind = "Video" if job.kind == "video" else "Audio"
-        size = ""
-        try:
-            if job.filepath and Path(job.filepath).exists():
-                mb = Path(job.filepath).stat().st_size / 1048576
-                size = f"{mb:.0f} MB" if mb >= 1 else f"{mb * 1024:.0f} KB"
-        except Exception:
-            pass
-        chips = QHBoxLayout()
-        chips.setSpacing(6)
-        for text in [b for b in (kind, job.quality, size) if b]:
-            chip = QLabel(text)
-            chip.setStyleSheet(f"background:{theme.TRACK}; color:{theme.MUTED};"
-                               f"border-radius:7px; padding:2px 8px; font-size:11px;")
-            chips.addWidget(chip)
-        chips.addStretch(1)
+        chips = _chip_row([b for b in (kind, job.quality, _size_text(job.filepath)) if b])
 
         self.b_play = HoverIconButton("play", "Play")
         self.b_play.clicked.connect(lambda: win.open_player(self.job_id))
@@ -825,34 +961,107 @@ class MediaCard(QFrame):
         self.thumb.load(path)
 
 
+class MediaTile(Card):
+    """Grid-view card: big thumbnail, title and meta underneath."""
+
+    def __init__(self, job, win: "MainWindow"):
+        super().__init__()
+        self.job_id = job.id
+        self.win = win
+        self.setFixedHeight(214)
+
+        self.thumb = MediaThumb(232, 130)
+        self.thumb.play.clicked.connect(lambda: win.open_player(self.job_id))
+        self.title = ElidedLabel(job.title or job.url)
+        self.title.setObjectName("cardTitle")
+        kind = "Video" if job.kind == "video" else "Audio"
+        meta = _label("  ·  ".join([b for b in (kind, job.quality, _size_text(job.filepath)) if b]),
+                      "hint")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(6)
+        lay.addWidget(self.thumb, 0, Qt.AlignHCenter)
+        lay.addWidget(self.title)
+        lay.addWidget(meta)
+
+        vid = _video_id(job.url)
+        if vid:
+            p = _thumb_path(vid)
+            if p.exists():
+                self.thumb.load(str(p))
+            else:
+                win.request_thumb(vid, job.url)
+
+    def enterEvent(self, e):
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+
+
 class MediaPage(GlowPage):
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.win = win
-        self.cards: dict[str, MediaCard] = {}
+        self.cards: dict[str, QWidget] = {}
+        self.grid_mode = False
 
         t = _label("Media", "pageTitle")
         self.count = _label("", "muted")
+        self.total = _label("", "hint")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search…")
+        self.search.setFixedSize(190, 34)
+        self.search.setStyleSheet(
+            f"QLineEdit{{background:{theme.CARD};border:1px solid {theme.BORDER};"
+            f"border-radius:9px;padding:6px 12px;font-size:12.5px;}}"
+            f"QLineEdit:focus{{border-color:{theme.ACCENT_A};}}")
+        self.search.textChanged.connect(lambda *_: self.rebuild())
+        self.b_view = QPushButton()
+        self.b_view.setObjectName("pill")
+        self.b_view.setCheckable(True)
+        self.b_view.setFixedSize(38, 34)
+        self.b_view.setIcon(icon("media", theme.MUTED))
+        self.b_view.setToolTip("Toggle grid view")
+        self.b_view.setCursor(Qt.PointingHandCursor)
+        self.b_view.toggled.connect(self._toggle_view)
         btn_open = HoverIconButton("folder", "Open download folder")
         btn_open.clicked.connect(win.open_output_folder)
+
         head = QHBoxLayout()
         head.setSpacing(theme.SM)
         head.setContentsMargins(0, 0, 8, 0)
         head.addWidget(t)
         head.addWidget(self.count)
+        head.addWidget(self.total)
         head.addStretch(1)
+        head.addWidget(self.search)
+        head.addWidget(self.b_view)
         head.addWidget(btn_open)
 
         self.empty = EmptyState("▤", "Nothing here yet",
                                 "Finished downloads show up here with a preview.",
                                 "Go to Home", lambda: win.go(0))
-        self.holder = QWidget()
-        self.list = QVBoxLayout(self.holder)
+
+        self.list_holder = QWidget()
+        self.list = QVBoxLayout(self.list_holder)
         self.list.setContentsMargins(0, 0, 8, 12)
         self.list.setSpacing(12)
         self.list.addStretch(1)
+
+        self.grid_holder = QWidget()
+        self.grid = QGridLayout(self.grid_holder)
+        self.grid.setContentsMargins(0, 0, 8, 12)
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(12)
+        self.grid.setColumnStretch(2, 1)
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.list_holder)
+        self.stack.addWidget(self.grid_holder)
         self.scroll = SlimScroll()
-        self.scroll.setWidget(self.holder)
+        self.scroll.setWidget(self.stack)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(theme.LG + 4, theme.MD + 6, theme.LG + 4, theme.SM)
@@ -860,6 +1069,11 @@ class MediaPage(GlowPage):
         lay.addLayout(head)
         lay.addWidget(self.empty, 1)
         lay.addWidget(self.scroll, 1)
+
+    def _toggle_view(self, on: bool):
+        self.grid_mode = on
+        self.stack.setCurrentIndex(1 if on else 0)
+        self.rebuild()
 
     def ready(self) -> list:
         """Finished jobs whose file still exists; one entry per file on disk."""
@@ -878,21 +1092,46 @@ class MediaPage(GlowPage):
             out.append(j)
         return out
 
+    def _clear(self, layout):
+        while layout.count():
+            it = layout.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+
     def rebuild(self):
         items = self.ready()
+        q = self.search.text().strip().lower()
+        if q:
+            items = [j for j in items if q in (j.title or j.url).lower()]
         for c in self.cards.values():
             c.setParent(None)
         self.cards = {}
-        while self.list.count() > 1:
-            it = self.list.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        self._clear(self.list)
+        self._clear(self.grid)
+        self.list.addStretch(1)
+
+        total = 0
         for job in items:
-            c = MediaCard(job, self.win)
-            self.cards[job.id] = c
-            self.list.insertWidget(self.list.count() - 1, c)
-            fade_in(c, 150)
+            try:
+                total += Path(job.filepath).stat().st_size
+            except Exception:
+                pass
+
+        if self.grid_mode:
+            for i, job in enumerate(items):
+                c = MediaTile(job, self.win)
+                self.cards[job.id] = c
+                self.grid.addWidget(c, i // 3, i % 3)
+            rows = (len(items) + 2) // 3
+            self.grid.setRowStretch(rows, 1)
+        else:
+            for job in items:
+                c = MediaCard(job, self.win)
+                self.cards[job.id] = c
+                self.list.insertWidget(self.list.count() - 1, c)
+
         self.count.setText(f"· {len(items)}" if items else "")
+        self.total.setText(f"· {_human(total)} total" if items else "")
         self.empty.setVisible(not items)
         self.scroll.setVisible(bool(items))
 
@@ -997,7 +1236,7 @@ class PlayerPage(QWidget):
 
 # ---------------------------------------------------------------- window
 class NavButton(QPushButton):
-    """Sidebar item with an optional count badge."""
+    """Sidebar item with an accent bar and a count badge."""
 
     def __init__(self, text: str, icon_name: str):
         super().__init__(f"   {text}")
@@ -1005,28 +1244,48 @@ class NavButton(QPushButton):
         self.setCheckable(True)
         self.setIcon(icon(icon_name, theme.MUTED))
         self.setCursor(Qt.PointingHandCursor)
+        self._count = 0
+        self.bar = QFrame(self)
+        self.bar.setFixedSize(3, 18)
+        self.bar.setStyleSheet(f"background:{theme.ACCENT_A}; border-radius:1px;")
+        self.bar.hide()
         self.badge = QLabel(self)
-        self.badge.setStyleSheet(f"background:{theme.ACCENT}; color:#0a1020; border-radius:8px;"
+        self.badge.setStyleSheet(f"background:{theme.ACCENT_A}; color:#0a1020; border-radius:8px;"
                                  f"padding:1px 6px; font-size:10.5px; font-weight:700;")
         self.badge.hide()
-        self._count = 0
+        self.toggled.connect(lambda *_: self._place())
 
-    def set_count(self, n: int):
+    def _place(self):
+        self.bar.setVisible(self.isChecked())
+        self.bar.move(5, (self.height() - self.bar.height()) // 2)
+        if self._count > 0:
+            self.badge.move(self.width() - self.badge.width() - 10,
+                            (self.height() - self.badge.height()) // 2)
+
+    def set_count(self, n: int, pop: bool = False):
+        grew = n != self._count and n > 0
         self._count = n
         if n <= 0:
             self.badge.hide()
             return
         self.badge.setText(str(n))
         self.badge.adjustSize()
-        self.badge.move(self.width() - self.badge.width() - 10,
-                        (self.height() - self.badge.height()) // 2)
+        self._place()
         self.badge.show()
         self.badge.raise_()
+        if pop and grew:
+            geo = self.badge.geometry()
+            a = QPropertyAnimation(self.badge, b"geometry", self)
+            a.setDuration(theme.DUR_FAST)
+            a.setStartValue(geo.adjusted(-3, -2, 3, 2))
+            a.setEndValue(geo)
+            a.setEasingCurve(QEasingCurve.OutBack)
+            a.start()
+            self._pop = a
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if self._count > 0:
-            self.set_count(self._count)
+        self._place()
 
 
 class MainWindow(QWidget):
@@ -1048,6 +1307,7 @@ class MainWindow(QWidget):
         self.setStyleSheet(theme.qss())
         self._last_page = 2
         self._prev_status: dict[str, str] = {}
+        self._badge_n = 0
         self.thumb_ready.connect(self._thumb_arrived)
         self.toaster = Toaster(self)
 
@@ -1059,6 +1319,11 @@ class MainWindow(QWidget):
         if mark.exists():
             logo.setPixmap(QPixmap(str(mark)).scaled(28, 28, Qt.KeepAspectRatio,
                                                      Qt.SmoothTransformation))
+        glow = QGraphicsDropShadowEffect(logo)
+        glow.setBlurRadius(22)
+        glow.setOffset(0, 0)
+        glow.setColor(QColor(107, 138, 253, 150))
+        logo.setGraphicsEffect(glow)
         brand = _label("Nimbus", "brand")
         brand_row = QHBoxLayout()
         brand_row.setSpacing(10)
@@ -1072,6 +1337,16 @@ class MainWindow(QWidget):
         self.nav_dl.clicked.connect(lambda: self.go(1))
         self.nav_media = NavButton("Media", "media")
         self.nav_media.clicked.connect(lambda: self.go(2))
+
+        self.btn_pause_all = QPushButton("Pause all")
+        self.btn_pause_all.setObjectName("ghost")
+        self.btn_pause_all.setCursor(Qt.PointingHandCursor)
+        self.btn_pause_all.clicked.connect(self.toggle_all)
+        self.btn_pause_all.hide()
+
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background:{theme.BORDER};")
 
         self.btn_update = QPushButton()
         self.btn_update.setObjectName("nav")
@@ -1091,8 +1366,12 @@ class MainWindow(QWidget):
         sl.addWidget(self.nav_dl)
         sl.addWidget(self.nav_media)
         sl.addStretch(1)
+        sl.addWidget(self.btn_pause_all)
+        sl.addSpacing(6)
+        sl.addWidget(divider)
+        sl.addSpacing(6)
         sl.addWidget(self.btn_update)
-        sl.addSpacing(4)
+        sl.addSpacing(2)
         sl.addWidget(foot)
 
         self.pages = QStackedWidget()
@@ -1150,14 +1429,26 @@ class MainWindow(QWidget):
                 page.setGraphicsEffect(eff)
             eff.setOpacity(0.0)
             anim = QPropertyAnimation(eff, b"opacity", self)
-            anim.setDuration(190)
+            anim.setDuration(theme.DUR)
             anim.setStartValue(0.0)
             anim.setEndValue(1.0)
             anim.setEasingCurve(QEasingCurve.OutCubic)
             anim.finished.connect(lambda: eff.setOpacity(1.0))
             anim.start()
-            # never leave a page invisible if the animation is pre-empted
             QTimer.singleShot(260, lambda: eff.setOpacity(1.0))
+            lay = page.layout()
+            if lay is not None:
+                base = lay.contentsMargins()
+                slide = QVariantAnimation(self)
+                slide.setDuration(theme.DUR)
+                slide.setStartValue(10.0)
+                slide.setEndValue(0.0)
+                slide.setEasingCurve(QEasingCurve.OutCubic)
+                slide.valueChanged.connect(
+                    lambda v: lay.setContentsMargins(base.left(), base.top() + int(v),
+                                                     base.right(), base.bottom()))
+                slide.start()
+                page._slide = slide
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1183,7 +1474,11 @@ class MainWindow(QWidget):
     def _sync_badge(self):
         active = sum(1 for j in self.manager.jobs.values()
                      if j.status in (PENDING, RUNNING, PROCESSING))
-        self.nav_dl.set_count(active)
+        self.nav_dl.set_count(active, pop=active > self._badge_n)
+        self._badge_n = active
+        self.btn_pause_all.setVisible(active > 0)
+        running = any(j.status == RUNNING for j in self.manager.jobs.values())
+        self.btn_pause_all.setText("Pause all" if running else "Resume all")
 
     def _job_changed(self, job_id: str):
         job = self.manager.get(job_id)
@@ -1220,6 +1515,14 @@ class MainWindow(QWidget):
     def retry(self, job_id: str):
         self.manager.resume(job_id)
         self._queues_changed()
+
+    def toggle_all(self):
+        running = any(j.status == RUNNING for j in self.manager.jobs.values())
+        for j in list(self.manager.jobs.values()):
+            if running and j.status in (RUNNING, PENDING):
+                self.manager.pause(j.id)
+            elif not running and j.status in (PAUSED, PENDING):
+                self.manager.resume(j.id)
 
     def request_thumb(self, vid: str, url: str):
         def work():
@@ -1300,11 +1603,13 @@ class MainWindow(QWidget):
     def _tick(self):
         running = [j for j in self.manager.jobs.values() if j.status in (RUNNING, PROCESSING)]
         if running:
-            self.statusbar.set_active(f"{len(running)} downloading · "
-                                      f"{_human(sum(j.speed for j in running))}/s")
+            speed = _human(sum(j.speed for j in running))
+            self.statusbar.set_active(f"{len(running)} downloading · {speed}/s")
+            self.page_dl.set_live(f"● {speed}/s")
             self.toaster.set_bottom_offset(38)
         else:
             self.statusbar.set_active("")
+            self.page_dl.set_live("")
             self.toaster.set_bottom_offset(8)
 
     def keyPressEvent(self, e):

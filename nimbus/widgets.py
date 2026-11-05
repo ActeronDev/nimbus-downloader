@@ -1,9 +1,10 @@
 """Small reusable widgets: badges, smooth progress, toasts, empty states. by ActeronDev"""
 from __future__ import annotations
 
-from PySide6.QtCore import (QEasingCurve, QObject, QPoint, QPropertyAnimation,
-                            QTimer, Qt)
-from PySide6.QtGui import QColor, QPainter, QPixmap, QRadialGradient
+from PySide6.QtCore import (QEasingCurve, Property, QObject, QPoint,
+                            QPropertyAnimation, QRectF, QTimer, Qt)
+from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QPixmap, QRadialGradient)
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QProgressBar, QPushButton, QScrollArea, QSizePolicy,
@@ -395,6 +396,102 @@ def fade_in(widget: QWidget, ms: int = theme.DUR):
     anim.setEasingCurve(QEasingCurve.OutCubic)
     anim.start()
     widget._fade_anim = anim
+
+
+class Card(QFrame):
+    """Card with a 1px inner top highlight so it reads as raised, not painted on."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setClipRect(0, 0, self.width(), 7)
+        p.setPen(QPen(QColor(255, 255, 255, 26), 1))
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1),
+                            theme.R_CARD - 0.5, theme.R_CARD - 0.5)
+        p.drawPath(path)
+
+
+class LiveBar(QWidget):
+    """Progress bar with an accent gradient and a shine that moves while active."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(6)
+        self._pct = 0.0
+        self._tint: QColor | None = None
+        self._active = False
+        self._phase = 0.0
+        self._anim = QPropertyAnimation(self, b"pct", self)
+        self._anim.setDuration(theme.DUR_SLOW)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+
+    def _get_pct(self) -> float:
+        return self._pct
+
+    def _set_pct(self, v: float):
+        self._pct = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    pct = Property(float, _get_pct, _set_pct)
+
+    def set_pct(self, percent: float):
+        target = max(0.0, min(1.0, percent / 100.0))
+        if abs(target - self._pct) < 0.002:
+            return
+        self._anim.stop()
+        self._anim.setStartValue(self._pct)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def set_active(self, on: bool):
+        self._active = on
+        if on and not self._timer.isActive():
+            self._timer.start(40)
+        elif not on:
+            self._timer.stop()
+            self.update()
+
+    def set_tint(self, color: QColor | None):
+        self._tint = color
+        self.update()
+
+    def _step(self):
+        self._phase = (self._phase + 0.02) % 1.0
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(theme.TRACK))
+        p.drawRoundedRect(r, 3, 3)
+        w = int(r.width() * self._pct)
+        if w <= 1:
+            return
+        chunk = QRectF(r.left(), r.top(), w, r.height())
+        grad = QLinearGradient(chunk.left(), 0, chunk.right(), 0)
+        a = self._tint or QColor(theme.ACCENT_A)
+        b = self._tint.lighter(135) if self._tint else QColor(theme.ACCENT_B)
+        grad.setColorAt(0, a)
+        grad.setColorAt(1, b)
+        p.setBrush(grad)
+        p.drawRoundedRect(chunk, 3, 3)
+        if self._active and w > 24:
+            shine = QColor(255, 255, 255, 60)
+            x = chunk.left() + self._phase * chunk.width()
+            band = QRectF(x - 18, chunk.top(), 36, chunk.height())
+            p.setClipRect(chunk.toRect())
+            p.setBrush(shine)
+            p.drawRect(band)
 
 
 class HoverIconButton(QPushButton):

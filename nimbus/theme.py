@@ -60,7 +60,9 @@ def qss() -> str:
 * {{ font-family:'{font_family()}'; font-size:13px; color:{TEXT};
      selection-background-color:{ACCENT_A}; selection-color:#0a1020; }}
 QWidget#root, QWidget#content, QStackedWidget, QStackedWidget > QWidget {{ background:{BG}; }}
-QWidget#sidebar {{ background:{SIDEBAR}; border-right:1px solid {BORDER}; }}
+QWidget#sidebar {{ background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {SIDEBAR}, stop:1 #0a0c11);
+                    border-right:1px solid {BORDER}; }}
 QLabel {{ background:transparent; }}
 QLabel#brand {{ font-size:17px; font-weight:700; letter-spacing:0.2px; }}
 QLabel#muted {{ color:{MUTED}; }}
