@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import threading
 import time
 import uuid
@@ -31,6 +33,7 @@ class Job:
     kind: str            # "video" | "audio"
     quality: str
     outdir: str
+    codec: str = "h264"  # "h264" (editors) | "original" (site best)
     title: str = ""
     status: str = PENDING
     pct: float = 0.0
@@ -55,10 +58,10 @@ class Manager(QObject):
         self._lock = threading.Lock()
 
     # ---------- queue ----------
-    def add(self, url: str, kind: str, quality: str) -> Job:
+    def add(self, url: str, kind: str, quality: str, codec: str = "h264") -> Job:
         outdir = config.load_settings()["video_dir" if kind == "video" else "audio_dir"]
         Path(outdir).mkdir(parents=True, exist_ok=True)
-        job = Job(uuid.uuid4().hex[:8], url, kind, quality, outdir)
+        job = Job(uuid.uuid4().hex[:8], url, kind, quality, outdir, codec)
         with self._lock:
             self.jobs[job.id] = job
             self.order.append(job.id)
@@ -223,11 +226,13 @@ class Manager(QObject):
 
         # Quality tag in the name: 480p and 1080p of the same video must coexist,
         # otherwise yt-dlp sees the old file and reports "already downloaded".
-        name = ("%(title).150B [%(id)s][%(width)sx%(height)s].%(ext)s" if job.kind == "video"
+        # [Orig] keeps the non-editable variant from clobbering the H.264 one.
+        tag = " [Orig]" if job.kind == "video" and job.codec == "original" else ""
+        name = (f"%(title).150B [%(id)s][%(width)sx%(height)s]{tag}.%(ext)s" if job.kind == "video"
                 else "%(title).150B [%(id)s].%(ext)s")
         opts = {
             "outtmpl": str(Path(job.outdir) / name),
-            "format": _format_string(job.kind, job.quality),
+            "format": _format_string(job.kind, job.quality, job.codec),
             "ffmpeg_location": str(config.ffmpeg_dir()),
             "noplaylist": True,
             "quiet": True,
@@ -260,6 +265,8 @@ class Manager(QObject):
                     job.title = info.get("title") or job.title
                     if not job.filepath:
                         job.filepath = _final_path(ydl, info)
+            if job.kind == "video" and job.codec == "h264":
+                self._to_h264(job, (info or {}).get("vcodec") or "")
             job.status = DONE
             job.pct = 100.0
             self._stop.pop(job.id, None)
@@ -278,6 +285,32 @@ class Manager(QObject):
             self.changed.emit(job.id)
             self.save()
             self._pump()
+
+    def _to_h264(self, job: Job, vcodec: str):
+        """Editors can't read VP9/AV1: re-encode the rare 1440p+ pick once."""
+        if not job.filepath or vcodec.startswith(("avc1", "h264")):
+            return
+        src = Path(job.filepath)
+        if not src.exists():
+            return
+        job.status = PROCESSING
+        job.pct = 99.0
+        self.changed.emit(job.id)
+        final = src if src.suffix.lower() == ".mp4" else src.with_suffix(".mp4")
+        out = final.with_name(final.stem + ".h264.mp4")
+        cmd = [str(config.ffmpeg_dir() / "ffmpeg.exe"), "-y", "-i", str(src),
+               "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "fast",
+               "-crf", "19", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+               "-movflags", "+faststart", str(out)]
+        # shortcut: the encode is not interruptible; pause/cancel lands only when it ends
+        r = subprocess.run(cmd, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        if r.returncode != 0 or not out.exists():
+            out.unlink(missing_ok=True)
+            raise RuntimeError("Re-encode to H.264 failed")
+        os.replace(out, final)
+        if final != src:
+            src.unlink(missing_ok=True)
+            job.filepath = str(final)
 
     # ---------- persistence ----------
     def save(self):
@@ -318,13 +351,17 @@ def _cleanup_partial(job: "Job") -> None:
             pass
 
 
-def _format_string(kind: str, quality: str) -> str:
+def _format_string(kind: str, quality: str, codec: str = "h264") -> str:
     if kind == "audio":
         return "bestaudio/best"
     h = HEIGHTS.get(quality)
-    if not h:
-        return "bv*+ba/b"
-    return f"bv*[height<={h}]+ba/b[height<={h}]/b"
+    hf = f"[height<={h}]" if h else ""
+    plain = f"bv*{hf}+ba/b{hf}/b" if h else "bv*+ba/b"
+    if codec == "original" or (h and h > 1080):
+        return plain
+    # avc1/mp4a is the pair every editor imports. YouTube has no avc1 above 1080p,
+    # so an explicit 1440p/2160p pick takes the VP9/AV1 stream and re-encodes after.
+    return f"bv*[vcodec^=avc1]{hf}+ba[acodec^=mp4a]/bv*[vcodec^=avc1]{hf}+ba/{plain}"
 
 
 def _audio_codec(quality: str):

@@ -27,14 +27,15 @@ def selftest(argv: list[str]) -> int:
     url = a[0] if a else "https://www.youtube.com/watch?v=aqz-KE-bpKQ"
     kind = a[1] if len(a) > 1 else "video"
     quality = a[2] if len(a) > 2 else "480p"
+    codec = a[3] if len(a) > 3 else "h264"
     app = QCoreApplication(sys.argv)
     m = downloader.Manager(1)
-    job = m.add(url, kind, quality)
+    job = m.add(url, kind, quality, codec)
     out = cfg.data_dir() / "selftest.json"
     def poll():
         if job.status in (downloader.DONE, downloader.ERROR, downloader.CANCELED):
             out.write_text(json.dumps({"status": job.status, "file": job.filepath,
-                                       "error": job.error, "pct": job.pct,
+                                       "error": job.error, "pct": job.pct, "codec": job.codec,
                                        "ffmpeg": str(cfg.ffmpeg_dir())}, ensure_ascii=False), encoding="utf-8")
             app.quit()
     t = QTimer(); t.timeout.connect(poll); t.start(500)

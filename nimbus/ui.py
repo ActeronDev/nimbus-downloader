@@ -239,6 +239,34 @@ class QualityPicker(QWidget):
         return b.property("value") if b else (VIDEO_QUALITIES[0])
 
 
+class CodecPicker(QWidget):
+    """Codec chips under the quality row: editors vs smallest file."""
+
+    def __init__(self):
+        super().__init__()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        for label, val in (("H.264 / AAC — editing compatible", "h264"),
+                           ("Original (AV1/VP9) — smallest file", "original")):
+            b = QPushButton(label)
+            b.setObjectName("chip")
+            b.setCheckable(True)
+            b.setProperty("value", val)
+            b.setCursor(Qt.PointingHandCursor)
+            self.group.addButton(b)
+            row.addWidget(b)
+            if val == "h264":
+                b.setChecked(True)
+        row.addStretch(1)
+
+    def value(self) -> str:
+        b = self.group.checkedButton()
+        return b.property("value") if b else "h264"
+
+
 # ---------------------------------------------------------------- home
 class HomePage(QWidget):
     def __init__(self, win: "MainWindow"):
@@ -286,6 +314,9 @@ class HomePage(QWidget):
         seg = QHBoxLayout(); seg.setSpacing(8); seg.addWidget(self.b_video); seg.addWidget(self.b_audio); seg.addStretch(1)
 
         self.quality = QualityPicker()
+        self.codec = CodecPicker()
+        self.codec_lbl = QLabel("Codec")
+        self.codec_lbl.setObjectName("hint")
         self.folder_lbl = QLabel(); self.folder_lbl.setObjectName("hint")
         btn_folder = QPushButton(); btn_folder.setObjectName("ghost")
         btn_folder.setIcon(icon("folder"))
@@ -303,7 +334,7 @@ class HomePage(QWidget):
         self.btn.clicked.connect(self.start)
         brow = QHBoxLayout(); brow.addStretch(1); brow.addWidget(self.btn)
 
-        hint = QLabel("Streams are copied, never re-encoded — full quality preserved.")
+        hint = QLabel("H.264/AAC is copied straight from the source when available; 1440p and 2160p are re-encoded once.")
         hint.setObjectName("hint")
 
         lay = QVBoxLayout(self)
@@ -314,6 +345,9 @@ class HomePage(QWidget):
         lay.addWidget(self.preview)
         lay.addLayout(seg)
         lay.addWidget(self.quality)
+        lay.addSpacing(2)
+        lay.addWidget(self.codec_lbl)
+        lay.addWidget(self.codec)
         lay.addLayout(frow)
         lay.addLayout(brow)
         lay.addWidget(hint)
@@ -373,12 +407,15 @@ class HomePage(QWidget):
             self._fetch_preview()
 
     def _fill_qualities(self):
-        if self.b_video.isChecked():
+        video = self.b_video.isChecked()
+        if video:
             # TikTok and other single-format sites only offer one real choice
             options = VIDEO_QUALITIES if self._is_youtube() else ["Best Quality"]
         else:
             options = AUDIO_QUALITIES
         self.quality.set_options(options)
+        self.codec_lbl.setVisible(video)
+        self.codec.setVisible(video)
         if hasattr(self, "folder_lbl"):
             self._sync_folder()
 
@@ -403,7 +440,7 @@ class HomePage(QWidget):
             return
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        self.win.manager.add(url, self.kind(), self.quality.value())
+        self.win.manager.add(url, self.kind(), self.quality.value(), self.codec.value())
         self.win.flash("Added to Downloads")
         self.win.go(1)
 
