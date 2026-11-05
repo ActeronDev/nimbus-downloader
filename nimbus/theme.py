@@ -71,7 +71,6 @@ QLabel#pageTitle {{ font-size:30px; font-weight:700; letter-spacing:-0.5px; }}
 QLabel#cardTitle {{ font-size:15px; font-weight:600; }}
 QLabel#sectionTitle {{ font-size:15px; font-weight:600; }}
 QLabel#micro {{ color:{DIM}; font-size:11px; font-weight:600; letter-spacing:1.4px; }}
-QLabel#toastText {{ font-size:13px; }}
 
 QLineEdit {{ background:{CARD}; border:1px solid {BORDER}; border-radius:{R_PILL}px;
             padding:16px 20px; font-size:14.5px; }}

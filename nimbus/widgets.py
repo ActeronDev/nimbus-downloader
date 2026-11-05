@@ -1,7 +1,7 @@
-"""Small reusable widgets: badges, smooth progress, toasts, empty states. by ActeronDev"""
+"""Small reusable widgets: badges, smooth progress, status bar, empty states. by ActeronDev"""
 from __future__ import annotations
 
-from PySide6.QtCore import (QEasingCurve, Property, QObject, QPoint,
+from PySide6.QtCore import (QEasingCurve, Property, QObject,
                             QPropertyAnimation, QRectF, QTimer, Qt)
 from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QRadialGradient)
@@ -233,6 +233,9 @@ class StatusBar(QFrame):
         self._bright = True
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._blink)
+        self._flash = QTimer(self)
+        self._flash.setSingleShot(True)
+        self._flash.timeout.connect(self._end_flash)
         self._paint_dot()
 
     def _paint_dot(self):
@@ -245,142 +248,30 @@ class StatusBar(QFrame):
 
     def set_active(self, text: str):
         if not text:
+            if self._flash.isActive():
+                return
             if self._on:
                 self._on = False
                 self._timer.stop()
                 self.hide()
             return
+        self._flash.stop()
         if not self._on:
             self._on = True
             self.show()
             self._timer.start(650)
         self.text.setText(text)
 
+    def flash(self, text: str, ms: int = 4000):
+        """Transient inline message: no popup, just the bar at the bottom."""
+        self._flash.start(ms)
+        self.show()
+        self.text.setText(text)
 
-class Toast(QFrame):
-    def __init__(self, parent: QWidget, text: str, kind: str = "info", on_close=None):
-        super().__init__(parent)
-        self.setObjectName("toast")
-        color = {"success": theme.SUCCESS, "error": theme.ERROR,
-                 "warning": theme.WARNING}.get(kind, theme.ACCENT_A)
-        bar = QFrame()
-        bar.setFixedWidth(3)
-        bar.setStyleSheet(f"background:{color}; border-radius:2px;")
-        self.label = QLabel(text)
-        self.label.setObjectName("toastText")
-        self.label.setWordWrap(True)
-        close = QPushButton()
-        close.setObjectName("ghost")
-        close.setIcon(icon("close", theme.DIM, 14))
-        close.setFixedSize(20, 20)
-        close.setCursor(Qt.PointingHandCursor)
-        close.setToolTip("Dismiss")
-        close.clicked.connect(lambda: on_close(self) if on_close else None)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 8, 8, 8)
-        lay.setSpacing(10)
-        lay.addWidget(bar)
-        lay.addWidget(self.label, 1)
-        lay.addWidget(close, 0, Qt.AlignTop)
-        self.setFixedWidth(330)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet(f"QFrame#toast {{ background:{theme.ELEV};"
-                           f" border:1px solid {theme.BORDER_STRONG}; border-radius:12px; }}")
-        self._effect = QGraphicsOpacityEffect(self)
-        self._effect.setOpacity(0.0)
-        self.setGraphicsEffect(self._effect)
-        self.layout().activate()
-        self.adjustSize()
-        self._anim = QPropertyAnimation(self._effect, b"opacity", self)
-        self._anim.setDuration(theme.DUR)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._pos = QPropertyAnimation(self, b"pos", self)
-        self._pos.setDuration(theme.DUR)
-        self._pos.setEasingCurve(QEasingCurve.OutCubic)
-
-    def fade(self, to: float):
-        self._anim.stop()
-        self._anim.setStartValue(self._effect.opacity())
-        self._anim.setEndValue(to)
-        self._anim.start()
-
-    def slide_to(self, target: QPoint, animate: bool = True):
-        self._pos.stop()
-        if not animate:
-            self.move(target)
-            return
-        self._pos.setStartValue(self.pos())
-        self._pos.setEndValue(target)
-        self._pos.start()
-
-
-class Toaster(QObject):
-    """Bottom-right overlay above the status bar: max 3, duplicates merged."""
-
-    MARGIN = 20
-    GAP = 8
-    MAX = 3
-    LIFE = 4000
-
-    def __init__(self, window: QWidget):
-        super().__init__(window)
-        self.window = window
-        self.items: list[Toast] = []
-        self.bottom_offset = 34
-        self._timers: dict[Toast, QTimer] = {}
-
-    def set_bottom_offset(self, px: int):
-        self.bottom_offset = px
-        self.reposition()
-
-    def show(self, text: str, kind: str = "info", ms: int = LIFE):
-        for t in self.items:
-            if t.label.text() == text:
-                self._restart(t, ms)
-                return
-        while len(self.items) >= self.MAX:
-            self._dismiss(self.items[0], quick=True)
-        t = Toast(self.window, text, kind, on_close=lambda x: self._dismiss(x))
-        self.items.append(t)
-        t.show()
-        t.raise_()
-        t.layout().activate()
-        t.adjustSize()
-        self.reposition(animate=False)
-        start = t.pos()
-        t.move(start.x(), start.y() + 10)
-        t.slide_to(start, animate=True)
-        t.fade(1.0)
-        self._restart(t, ms)
-
-    def _restart(self, t: Toast, ms: int):
-        timer = self._timers.get(t)
-        if timer is None:
-            timer = QTimer(self.window)
-            timer.setSingleShot(True)
-            timer.timeout.connect(lambda: self._dismiss(t))
-            self._timers[t] = timer
-        timer.start(ms)
-
-    def _dismiss(self, t: Toast, quick: bool = False):
-        if t not in self.items:
-            return
-        self.items.remove(t)
-        timer = self._timers.pop(t, None)
-        if timer:
-            timer.stop()
-        t.fade(0.0)
-        QTimer.singleShot(70 if quick else 170,
-                          lambda: (t.deleteLater(), self.reposition()))
-
-    def reposition(self, animate: bool = True):
-        y = self.window.height() - self.bottom_offset - self.MARGIN
-        for t in reversed(self.items):
-            t.adjustSize()
-            x = self.window.width() - t.width() - self.MARGIN
-            y -= t.height()
-            t.slide_to(QPoint(x, y), animate=animate)
-            y -= self.GAP
+    def _end_flash(self):
+        if not self._on:
+            self.text.clear()
+            self.hide()
 
 
 def fade_in(widget: QWidget, ms: int = theme.DUR):

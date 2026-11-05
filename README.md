@@ -24,7 +24,7 @@ Licensed under the [MIT License](LICENSE).
 - **Parallel downloads** with pause, resume, retry and cancel, live speed and ETA
 - **Media library** with list and grid views, search, thumbnails, and delete that removes the file from disk
 - **Link preview** — title, channel, duration and thumbnail before you download
-- Dark layered UI with a blue→violet accent, toast notifications and keyboard shortcuts
+- Dark layered UI with a blue→violet accent, inline status messages and keyboard shortcuts
   (Space to play/pause, Esc to go back)
 
 ## Download
@@ -70,7 +70,7 @@ nimbus/config.py      paths, settings, version
 nimbus/downloader.py  job queue, yt-dlp engine, pause/resume/cancel, H.264 fallback
 nimbus/ui.py          sidebar app: Home / Downloads / Media / Player, cards
 nimbus/theme.py       colours, spacing, durations and the one global stylesheet
-nimbus/widgets.py     badge, live progress, toasts, status bar, empty states
+nimbus/widgets.py     badge, live progress, status bar, empty states
 nimbus/icons.py       QPainter-drawn icon set
 nimbus/update.py      yt-dlp updater
 assets/               logo, icon, screenshot

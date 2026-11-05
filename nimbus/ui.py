@@ -16,7 +16,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QSlider,
+                               QLineEdit, QPushButton, QSlider,
                                QStackedWidget, QVBoxLayout, QWidget)
 
 import yt_dlp
@@ -27,7 +27,7 @@ from .downloader import (AUDIO_QUALITIES, CANCELED, DONE, ERROR, PAUSED,
                          _js_runtimes)
 from .icons import icon
 from .widgets import (Badge, Card, ElidedLabel, EmptyState, GlowPage, HoverIconButton,
-                      LiveBar, SlimScroll, StatusBar, Toaster, dominant_color, rgba)
+                      LiveBar, SlimScroll, StatusBar, dominant_color, rgba)
 
 THUMBS = config.data_dir() / "thumbs"
 THUMBS.mkdir(parents=True, exist_ok=True)
@@ -1309,7 +1309,6 @@ class MainWindow(QWidget):
         self._prev_status: dict[str, str] = {}
         self._badge_n = 0
         self.thumb_ready.connect(self._thumb_arrived)
-        self.toaster = Toaster(self)
 
         side = QWidget()
         side.setObjectName("sidebar")
@@ -1450,16 +1449,8 @@ class MainWindow(QWidget):
                 slide.start()
                 page._slide = slide
 
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        if hasattr(self, "toaster"):
-            self.toaster.reposition()
-
-    def toast(self, text: str, kind: str = "info"):
-        self.toaster.show(text, kind)
-
     def flash(self, text: str):
-        self.toast(text, "info")
+        self.statusbar.flash(text)
 
     def clipboard_text(self) -> str:
         from PySide6.QtWidgets import QApplication
@@ -1489,12 +1480,13 @@ class MainWindow(QWidget):
         if prev != job.status:
             title = job.title or "Download"
             short = title if len(title) <= 42 else title[:41] + "…"
+            # prev is None only for jobs restored from disk: no messages on startup.
             if job.status == PENDING and prev is None:
-                self.toast(f"Download started · {short}", "info")
-            elif job.status == DONE:
-                self.toast(f"Download complete · {short}", "success")
+                self.flash(f"Download started · {short}")
+            elif job.status == DONE and prev is not None:
+                self.flash(f"Download complete · {short}")
             elif job.status == ERROR:
-                self.toast(f"Failed · {_friendly_error(job.error)}", "error")
+                self.flash(f"Failed · {_friendly_error(job.error)}")
         card = self.page_dl.cards.get(job_id)
         if card:
             card.refresh(job)
@@ -1505,7 +1497,7 @@ class MainWindow(QWidget):
     def clear_finished(self):
         n = self.manager.hide_finished()
         if n:
-            self.toast(f"Cleared {n} finished item{'s' if n != 1 else ''}", "info")
+            self.flash(f"Cleared {n} finished item{'s' if n != 1 else ''}")
         self._queues_changed()
 
     def hide_job(self, job_id: str):
@@ -1556,7 +1548,7 @@ class MainWindow(QWidget):
             self.nav_dl.setChecked(False)
             self.nav_media.setChecked(False)
         else:
-            self.toast("File not found — it may have been moved or deleted", "warning")
+            self.flash("File not found — it may have been moved or deleted")
             self.page_media.rebuild()
 
     def reveal(self, job_id: str):
@@ -1576,9 +1568,9 @@ class MainWindow(QWidget):
         name = Path(job.filepath).name if job.filepath else (job.title or "this item")
         ok, msg = self.manager.delete_media(job_id)
         if ok:
-            self.toast(f"Deleted · {name[:38]}", "info")
+            self.flash(f"Deleted · {name[:38]}")
         else:
-            self.toast(msg, "error")
+            self.flash(msg)
         self._queues_changed()
 
     def open_output_folder(self):
@@ -1586,7 +1578,7 @@ class MainWindow(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(self.page_home.settings.get(key, "")))
 
     def update_ytdlp(self):
-        self.toast("Updating yt-dlp…", "info")
+        self.flash("Updating yt-dlp…")
         self.btn_update.setEnabled(False)
 
         def work():
@@ -1596,9 +1588,7 @@ class MainWindow(QWidget):
 
     def _update_done(self, ok: bool, msg: str):
         self.btn_update.setEnabled(True)
-        self.toast(msg, "success" if ok else "error")
-        if not ok:
-            QMessageBox.warning(self, "Update", msg)
+        self.flash(msg)
 
     def _tick(self):
         running = [j for j in self.manager.jobs.values() if j.status in (RUNNING, PROCESSING)]
@@ -1606,11 +1596,9 @@ class MainWindow(QWidget):
             speed = _human(sum(j.speed for j in running))
             self.statusbar.set_active(f"{len(running)} downloading · {speed}/s")
             self.page_dl.set_live(f"● {speed}/s")
-            self.toaster.set_bottom_offset(38)
         else:
             self.statusbar.set_active("")
             self.page_dl.set_live("")
-            self.toaster.set_bottom_offset(8)
 
     def keyPressEvent(self, e):
         if self.pages.currentIndex() == 3 and e.key() == Qt.Key_Escape:
