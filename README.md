@@ -17,13 +17,15 @@ Licensed under the [MIT License](LICENSE).
 
 - **YouTube and TikTok** links, with an in-app player that handles VP9 / AV1 / H.265 / opus
 - **Video or audio** from a single link
-- **Full quality, always** — streams are copied, never re-encoded
+- **Codec choice** — `H.264 / AAC` (the pair every editor imports: Premiere, Resolve,
+  After Effects) or `Original (AV1/VP9)` for the smallest file
 - **Visible quality chips** on YouTube: Best Quality / 360p / 480p / 720p (HD) / 1080p (FHD) / 1440p (2K) / 2160p (4K);
   single-format sites like TikTok collapse to Best Quality
-- **Parallel downloads** with pause, resume and cancel
-- **Media library** with thumbnails, plus delete that removes the file from disk
+- **Parallel downloads** with pause, resume, retry and cancel, live speed and ETA
+- **Media library** with list and grid views, search, thumbnails, and delete that removes the file from disk
 - **Link preview** — title, channel, duration and thumbnail before you download
-- Lightweight dark UI, fully keyboard friendly (Space to play/pause, Esc to go back)
+- Dark layered UI with a blue→violet accent, toast notifications and keyboard shortcuts
+  (Space to play/pause, Esc to go back)
 
 ## Download
 
@@ -38,8 +40,8 @@ Windows 10/11, 64-bit. If Windows shows "unknown publisher" on first launch, cho
 | Layer | Choice |
 |---|---|
 | Download engine | `yt-dlp` as a library (same process, so progress is exact) |
-| Media | bundled `ffmpeg` — stream copy only, no re-encode |
-| UI | PySide6 (Qt 6) with a vector icon set drawn in code |
+| Media | bundled `ffmpeg` — stream copy for H.264/AAC; 1440p/2160p H.264 is re-encoded once |
+| UI | PySide6 (Qt 6), theme tokens in `theme.py`, vector icons drawn in code |
 | Packaging | PyInstaller `--onedir` |
 
 The app talks to YouTube through yt-dlp's extractors; when YouTube changes something,
@@ -52,21 +54,23 @@ python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt
 python fetch_vendor.py          # downloads ffmpeg + QuickJS into vendor/
 pyinstaller --noconfirm --clean --windowed --name Nimbus --onedir \
-  --collect-all yt_dlp --version-file version_info.txt --icon assets/nimbus.ico \
+  --collect-all yt_dlp --collect-all curl_cffi --version-file version_info.txt --icon assets/nimbus.ico \
   --add-data "vendor/ffmpeg/ffmpeg.exe;vendor/ffmpeg" \
   --add-data "vendor/js/qjs.exe;vendor/js" \
   --add-data "assets/mark.png;assets" --add-data "assets/nimbus.ico;assets" run.py
 ```
 
-`Nimbus.exe --selftest <url> [video|audio] [quality]` runs a headless download and writes
-the result to `%APPDATA%\Nimbus\selftest.json`.
+`Nimbus.exe --selftest <url> [video|audio] [quality] [h264|original]` runs a headless
+download and writes the result to `%APPDATA%\Nimbus\selftest.json`.
 
 ## Project layout
 
 ```
 nimbus/config.py      paths, settings, version
-nimbus/downloader.py  job queue, yt-dlp engine, pause/resume/cancel
-nimbus/ui.py          sidebar app: Home / Downloads / Media / Player
+nimbus/downloader.py  job queue, yt-dlp engine, pause/resume/cancel, H.264 fallback
+nimbus/ui.py          sidebar app: Home / Downloads / Media / Player, cards
+nimbus/theme.py       colours, spacing, durations and the one global stylesheet
+nimbus/widgets.py     badge, live progress, toasts, status bar, empty states
 nimbus/icons.py       QPainter-drawn icon set
 nimbus/update.py      yt-dlp updater
 assets/               logo, icon, screenshot
